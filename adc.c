@@ -20,6 +20,14 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
 
+#include "esp_timer.h"
+
+// #if CONFIG_VERBOSE_BUILD
+// // The local log level must be defined before including esp_log.h
+// // Set the maximum log level for this source file
+// #define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
+// #endif
+
 ESP_EVENT_DEFINE_BASE(ADC_EVENT);
 
 const static char *TAG = "adc";
@@ -102,7 +110,7 @@ uint16_t v_graph_lipo[V_GRAPH_LIPO_LEN] = {
     42000,  // 100
 };
 
-#define USE_CORRECTION 1
+// #define USE_CORRECTION 1
 #ifdef USE_CORRECTION
 
 uint16_t td_s3_adj[ADJ_LENGTH] = {
@@ -134,31 +142,30 @@ uint16_t td_s3_adj[ADJ_LENGTH] = {
     4148,//4250
 #elif defined(CONFIG_HAS_BOARD_LILYGO_EPAPER_T5)
 /// lilygo t5 v213 adc calibration data
-    //2987,//3050
-    3040,//3100
-    3095,//3150
-    3147,//3200
-    3201,//3250
-    3255,//3300
-    3303,//3350
-    3355,//3400
-    3405,//3450
-    3455,//3500
-    3503,//3550
-    3554,//3600
-    3602,//3650
-    3652,//3700
-    3709,//3750
-    3757,//3800
-    3803,//3850
-    3851,//3900
-    3902,//3950
-    3952,//4000
-    4001,//4050
-    4052,//4100
-    4100,//4150
-    4150,//4200
-    4198,//4250
+    3018,// 3100
+    3068,// 3150
+    3124,// 3200
+    3166,// 3250
+    3208,// 3300
+    3262,// 3350
+    3322,// 3400
+    3378,// 3450
+    3426,// 3500 // correct
+    3482,// 3550
+    3534,// 3600
+    3580,// 3650
+    3634,// 3700
+    3690,// 3750
+    3740,// 3800
+    3784,// 3850
+    3830,// 3900
+    3882,// 3950
+    3929,// 4000
+    3977,// 4050
+    4027,// 4100
+    4055,// 4150
+    4118,// 4200
+    4172,// 4250
 #endif
 };
 #endif
@@ -197,14 +204,14 @@ uint8_t calc_bat_perc_v(float adc) {
         ret = 100;
     }
     done:
-    ESP_LOGI(TAG, "[%s] (voltage: %f, converted: %"PRIu16" mV, perc: %"PRIu8")", __FUNCTION__, adc, kadc, ret);
+    ESP_LOGD(TAG, "[%s] (voltage: %f, converted: %"PRIu16" mV, perc: %"PRIu8")", __FUNCTION__, adc, kadc, ret);
     return ret;
 }
 
 int calc_bat_perc(float adc) {
     float adck = adc * 1000;
     float bat_perc = (100 * ((1 - ((VOLTAGE_MAX - adck) / (VOLTAGE_MAX - VOLTAGE_MIN)))));
-    ESP_LOGI(TAG, "[%s] (voltage: %f, converted: %f mV, perc: %f, coef: %f)", __FUNCTION__, adc, adck, bat_perc, 1-((VOLTAGE_MAX - adck) / (VOLTAGE_MAX - VOLTAGE_MIN)));
+    ESP_LOGD(TAG, "[%s] (voltage: %f, converted: %f mV, perc: %f, coef: %f)", __FUNCTION__, adc, adck, bat_perc, 1-((VOLTAGE_MAX - adck) / (VOLTAGE_MAX - VOLTAGE_MIN)));
 
     if (bat_perc < 0)
         bat_perc = 0;
@@ -251,7 +258,7 @@ unsigned char E_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc
 
     *out_handle = handle;
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Calibration Success");
+        ESP_LOGD(TAG, "Calibration Success");
     } else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated) {
         ESP_LOGW(TAG, "eFuse not burnt, skip software calibration");
     } else {
@@ -264,14 +271,14 @@ void E_adc_calibration_deinit(adc_cali_handle_t handle) {
     esp_err_t err = 0;
 
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-    ESP_LOGI(TAG, "deregister %s calibration scheme", "Curve Fitting");
+    ESP_LOGD(TAG, "deregister %s calibration scheme", "Curve Fitting");
     err = adc_cali_delete_scheme_curve_fitting(handle);
     if (err) {
         ESP_LOGE(TAG, "failed to deregister %s calibration scheme",
                  "Line Fitting");
     }
 #elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
-    ESP_LOGI(TAG, "deregister %s calibration scheme", "Line Fitting");
+    ESP_LOGD(TAG, "deregister %s calibration scheme", "Line Fitting");
     err = adc_cali_delete_scheme_line_fitting(handle);
     if (err) {
         ESP_LOGE(TAG, "failed to deregister %s calibration scheme",
@@ -325,6 +332,7 @@ int init_adc() {
 
 int deinit_adc() {
     esp_err_t err = 0;
+    ESP_ERROR_CHECK(esp_timer_stop(adc_ctx.adc_periodic_timer));
     ESP_ERROR_CHECK(esp_timer_delete(adc_ctx.adc_periodic_timer));
     // Tear Down
     err = adc_oneshot_del_unit(adc_ctx.adc1_handle);
@@ -381,7 +389,8 @@ void volt_update() {
         ++i;
     }
     if(i==j) --i;
-    adj = (float)((3100 + (i*50)) / td_s3_adj[i]);
+    adj = ((float)(3100 + (i*50)) / (float)td_s3_adj[i]);
+    ESP_LOGD(TAG, "[%s] Reading:%f Voltage[%d]: %"PRIu16", adj: %f, level: %d", __FUNCTION__, reading, i, td_s3_adj[i], adj, (3100 + (i*50)));
     //adj = td_s3_adj[i].adjustment;
 #endif
     if(adj!=1&&adj!=0)
@@ -390,10 +399,13 @@ void volt_update() {
         adc_ctx.voltage_row[++adc_ctx.voltage_row_index % VOLTAGE_ROW_SIZE] = (uint32_t)corr*100;
         xSemaphoreGive(adc_ctx.xMutex);
     }
+    for(int i=0; i<VOLTAGE_ROW_SIZE; ++i) {
+        ESP_LOGD(TAG, "[%s] Voltage[%d]: %d", __FUNCTION__, i, adc_ctx.voltage_row[i]);
+    }
 // #ifdef USE_CUSTOM_CALIBRATION_VAL
 //     ESP_LOGD(TAG, "[%s] Voltage computed: %f, calibration: %f,  corr: %f, adj: %f", __FUNCTION__, reading, calibration, corr, adj);
 // #else
-     ESP_LOGI(TAG, "[%s] Voltage computed: %f,  corr: %f, adj: %f", __FUNCTION__, reading, corr, adj);
+     ESP_LOGD(TAG, "[%s] Voltage computed: %f,  corr: %f, adj: %f rowindex: %ld", __FUNCTION__, reading, corr, adj, (adc_ctx.voltage_row_index % VOLTAGE_ROW_SIZE));
 // #endif
     esp_event_post(ADC_EVENT, ADC_EVENT_VOLTAGE_UPDATE, &corr, sizeof(corr), portMAX_DELAY);
 }
@@ -403,9 +415,10 @@ float volt_read(float calibration) {
 #else
 float volt_read() {
 #endif
-    if(adc_ctx.voltage_row_index < 3)
+
+    //if(adc_ctx.voltage_row_index < 3)
         return (float)adc_ctx.voltage_row[adc_ctx.voltage_row_index % VOLTAGE_ROW_SIZE]/1000/100;
-    return (float)smooth_int(&(adc_ctx.voltage_row[0]), adc_ctx.voltage_row_index, VOLTAGE_ROW_SIZE, 1) / 1000/100;
+    //return (float)smooth_int(&(adc_ctx.voltage_row[0]), adc_ctx.voltage_row_index, VOLTAGE_ROW_SIZE, 1) / 1000/100;
 }
 
 int adc_read() {
@@ -422,7 +435,7 @@ int adc_read() {
         if (err) {
             ESP_LOGE(TAG, "failed to adc_cali_raw_to_voltage adc1 chan0");
         }
-        ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, E_ADC1_CHAN0, adc_ctx.voltage);
+        ESP_LOGD(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, E_ADC1_CHAN0, adc_ctx.voltage);
     }
 
     adc_reading = adc_ctx.voltage;
