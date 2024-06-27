@@ -30,6 +30,13 @@
 
 ESP_EVENT_DEFINE_BASE(ADC_EVENT);
 
+const char * adc_event_strings[] = {
+    "ADC_EVENT_BATTERY_LOW",                  // battery level is low
+    "ADC_EVENT_BATTERY_CRITICAL",             // battery level is critical
+    "ADC_EVENT_BATTERY_OK",                   // battery level is ok
+    "ADC_EVENT_VOLTAGE_UPDATE",               // voltage is updated
+};
+
 const static char *TAG = "adc";
 
 #define VOLTAGE_MAX 4190
@@ -86,7 +93,7 @@ typedef struct adc_context_s {
 
 static adc_context_t adc_ctx = ADC_CONTEXT_DEFAULT;
 
-uint16_t v_graph_lipo[V_GRAPH_LIPO_LEN] = {
+static const uint16_t v_graph_lipo[V_GRAPH_LIPO_LEN] = {
     32700,  // 0
     36100,  // 5
     36900,  // 10
@@ -113,7 +120,7 @@ uint16_t v_graph_lipo[V_GRAPH_LIPO_LEN] = {
 // #define USE_CORRECTION 1
 #ifdef USE_CORRECTION
 
-uint16_t td_s3_adj[ADJ_LENGTH] = {
+static const uint16_t td_s3_adj[ADJ_LENGTH] = {
 #if defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3)
 //lilygo t-display s3 calibration data
     2958,//3100

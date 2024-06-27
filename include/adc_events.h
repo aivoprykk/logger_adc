@@ -18,6 +18,8 @@ enum {
     ADC_EVENT_VOLTAGE_UPDATE,               // voltage is updated
 };
 
+extern const char * adc_event_strings[];
+
 #ifdef __cplusplus
 }
 #endif
