@@ -15,7 +15,6 @@
 #include "adc.h"
 #include "adc_private.h"
 #include "adc_events.h"
-#include "logger_common.h"
 
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
@@ -301,8 +300,7 @@ static void periodic_timer_callback(void* arg) {
 int init_adc() {
     esp_err_t err = 0;
     int ret = 0;
-    LOGR;
-
+    
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = ADC_UNIT_1,
     };
@@ -369,7 +367,7 @@ int32_t adc_read_count(uint16_t count, uint16_t delay) {
         reading = (cur + reading * (count - 1)) / count;
         //reading += adc_read();
         if (delay)
-            delay_ms(delay);
+            vTaskDelay((delay + (portTICK_PERIOD_MS - 1)) / portTICK_PERIOD_MS);
     }
     //return (count ? reading / count : reading) * 100;
     return reading*100;
