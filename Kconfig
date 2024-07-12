@@ -1,0 +1,28 @@
+menu "Logger ADC Module Options"
+    choice
+        bool "Default log verbosity"
+        default LOGGER_ADC_LOG_LEVEL_WARN
+        help
+            Specify how important log should be added.
+        config LOGGER_ADC_LOG_LEVEL_TRACE
+            bool "TRACE: A lot of logs to give detailed information"
+        config LOGGER_ADC_LOG_LEVEL_INFO
+            bool "INFO: Log important events"
+        config LOGGER_ADC_LOG_LEVEL_WARN
+            bool "WARN: Log if something unwanted happened but didn't cause a problem"
+        config LOGGER_ADC_LOG_LEVEL_ERROR
+            bool "ERROR: Only critical issues, when the system may fail"
+        config LOGGER_ADC_LOG_LEVEL_USER
+            bool "USER: Only logs added by the user"
+        config LOGGER_ADC_LOG_LEVEL_NONE
+            bool "NONE: Do not log anything"
+    endchoice
+    config LOGGER_ADC_LOG_LEVEL
+        int
+        default 0 if LOGGER_ADC_LOG_LEVEL_TRACE
+        default 1 if LOGGER_ADC_LOG_LEVEL_INFO
+        default 2 if LOGGER_ADC_LOG_LEVEL_WARN
+        default 3 if LOGGER_ADC_LOG_LEVEL_ERROR
+        default 4 if LOGGER_ADC_LOG_LEVEL_USER
+        default 5 if LOGGER_ADC_LOG_LEVEL_NONE
+endmenu

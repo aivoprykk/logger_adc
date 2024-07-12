@@ -39,7 +39,7 @@ const char * adc_event_strings[] = {
 const static char *TAG = "adc";
 
 #define VOLTAGE_MAX 4190
-#define VOLTAGE_MIN 3300
+#define VOLTAGE_MIN 3200
 
 #define DEFAULT_VREF 1114
 #define NO_OF_SAMPLES 64
@@ -147,36 +147,37 @@ static const uint16_t td_s3_adj[ADJ_LENGTH] = {
     4094,//4200
     4148,//4250
 #elif defined(CONFIG_HAS_BOARD_LILYGO_EPAPER_T5)
-/// lilygo t5 v213 adc calibration data
-    3018,// 3100
-    3068,// 3150
-    3124,// 3200
-    3166,// 3250
-    3208,// 3300
-    3262,// 3350
-    3322,// 3400
-    3378,// 3450
-    3426,// 3500 // correct
-    3482,// 3550
-    3534,// 3600
-    3580,// 3650
-    3634,// 3700
-    3690,// 3750
-    3740,// 3800
-    3784,// 3850
-    3830,// 3900
-    3882,// 3950
-    3929,// 4000
-    3977,// 4050
-    4027,// 4100
-    4055,// 4150
-    4118,// 4200
-    4172,// 4250
+/// lilygo t5 v213 adc calibration data tested with m10gps
+    2958,//3100
+    3065,//3150
+    3124,//3200
+    3180,//3250
+    3230,//3300
+    3285,//3350
+    3340,//3400
+    3398,//3450
+    3453,//3500
+    3505,//3550
+    3558,//3600
+    3604,//3650
+    3664,//3700
+    3706,//3750
+    3758,//3800
+    3808,//3850
+    3863,//3900
+    3914,//3950
+    3962,//4000
+    4012,//4050
+    4059,//4100
+    4112,//4150
+    4164,//4200
+    4206,//4250
 #endif
 };
 #endif
 
 uint8_t calc_bat_perc_v(float adc) {
+    ILOG(TAG, "[%s]", __FUNCTION__);
     uint16_t kadc = adc * 10000, sv, step;
     uint8_t i=0, ret = 0, perc=0;
     uint16_t v, v1;
@@ -210,14 +211,15 @@ uint8_t calc_bat_perc_v(float adc) {
         ret = 100;
     }
     done:
-    ESP_LOGD(TAG, "[%s] (voltage: %f, converted: %"PRIu16" mV, perc: %"PRIu8")", __FUNCTION__, adc, kadc, ret);
+    DLOG(TAG, "[%s] voltage: %f converted: %"PRIu16" mV perc: %"PRIu8"", __FUNCTION__, adc, kadc, ret);
     return ret;
 }
 
 int calc_bat_perc(float adc) {
+    ILOG(TAG, "[%s]", __FUNCTION__);
     float adck = adc * 1000;
     float bat_perc = (100 * ((1 - ((VOLTAGE_MAX - adck) / (VOLTAGE_MAX - VOLTAGE_MIN)))));
-    ESP_LOGD(TAG, "[%s] (voltage: %f, converted: %f mV, perc: %f, coef: %f)", __FUNCTION__, adc, adck, bat_perc, 1-((VOLTAGE_MAX - adck) / (VOLTAGE_MAX - VOLTAGE_MIN)));
+    DLOG(TAG, "[%s] voltage: %f  converted: %f mV perc: %f coef: %f", __FUNCTION__, adc, adck, bat_perc, 1-((VOLTAGE_MAX - adck) / (VOLTAGE_MAX - VOLTAGE_MIN)));
 
     if (bat_perc < 0)
         bat_perc = 0;
@@ -227,13 +229,14 @@ int calc_bat_perc(float adc) {
 }
 
 unsigned char E_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle) {
+    ILOG(TAG, "[%s]", __FUNCTION__);
     adc_cali_handle_t handle = NULL;
     esp_err_t ret = ESP_FAIL;
     unsigned char calibrated = false;
 
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     if (!calibrated) {
-        ESP_LOGD(TAG, "calibration scheme version is %s", "Curve Fitting");
+        DLOG(TAG, "[%s] calibration scheme version is %s", __func__, "Curve Fitting");
         adc_cali_curve_fitting_config_t cali_config = {
             .unit_id = unit,
             .chan = channel,
@@ -249,7 +252,7 @@ unsigned char E_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc
 
 #if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
     if (!calibrated) {
-        ESP_LOGD(TAG, "calibration scheme version is %s", "Line Fitting");
+        DLOG(TAG, "[%s] calibration scheme version is %s", __func__, "Line Fitting");
         adc_cali_line_fitting_config_t cali_config = {
             .unit_id = unit,
             .atten = atten,
@@ -264,31 +267,31 @@ unsigned char E_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc
 
     *out_handle = handle;
     if (ret == ESP_OK) {
-        ESP_LOGD(TAG, "Calibration Success");
+        DLOG(TAG, "[%s] Calibration Success", __func__);
     } else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated) {
-        ESP_LOGW(TAG, "eFuse not burnt, skip software calibration");
+        WLOG(TAG, "[%s] eFuse not burnt, skip software calibration", __func__);
     } else {
-        ESP_LOGE(TAG, "Invalid arg or no memory");
+        ESP_LOGE(TAG, "[%s] Invalid arg or no memory", __func__);
     }
     return calibrated;
 }
 
 void E_adc_calibration_deinit(adc_cali_handle_t handle) {
+    ILOG(TAG, "[%s]", __FUNCTION__);
     esp_err_t err = 0;
 
 #if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-    ESP_LOGD(TAG, "deregister %s calibration scheme", "Curve Fitting");
+    ILOG(TAG, "[%s] deregister %s calibration scheme", __func__, "Curve Fitting");
     err = adc_cali_delete_scheme_curve_fitting(handle);
     if (err) {
         ESP_LOGE(TAG, "failed to deregister %s calibration scheme",
                  "Line Fitting");
     }
 #elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
-    ESP_LOGD(TAG, "deregister %s calibration scheme", "Line Fitting");
+    DLOG(TAG, "[%s] deregister %s calibration scheme", __func__, "Line Fitting");
     err = adc_cali_delete_scheme_line_fitting(handle);
     if (err) {
-        ESP_LOGE(TAG, "failed to deregister %s calibration scheme",
-                 "Line Fitting");
+        ESP_LOGE(TAG, "[%s] failed to deregister %s calibration scheme", __func__, "Line Fitting");
     }
 #endif
 }
@@ -298,6 +301,7 @@ static void periodic_timer_callback(void* arg) {
 }
 
 int init_adc() {
+    ILOG(TAG, "[%s]", __FUNCTION__);
     esp_err_t err = 0;
     int ret = 0;
     
@@ -306,7 +310,7 @@ int init_adc() {
     };
     err = adc_oneshot_new_unit(&init_config1, &adc_ctx.adc1_handle);
     if (err) {
-        ESP_LOGE(TAG, "failed to adc_oneshot_new_unit adc1");
+        ESP_LOGE(TAG, "[%s] failed to adc_oneshot_new_unit adc1", __func__);
     }
 
     //-------------ADC1 Config---------------//
@@ -316,7 +320,7 @@ int init_adc() {
     };
     err = adc_oneshot_config_channel(adc_ctx.adc1_handle, E_ADC1_CHAN0, &config);
     if (err) {
-        ESP_LOGE(TAG, "failed to adc_oneshot_config_channel adc1 chan0");
+        ESP_LOGE(TAG, "[%s] failed to adc_oneshot_config_channel adc1 chan0", __func__);
     }
 
     //-------------ADC1 Calibration Init---------------//
@@ -336,13 +340,14 @@ int init_adc() {
 }
 
 int deinit_adc() {
+    ILOG(TAG, "[%s]", __FUNCTION__);
     esp_err_t err = 0;
     ESP_ERROR_CHECK(esp_timer_stop(adc_ctx.adc_periodic_timer));
     ESP_ERROR_CHECK(esp_timer_delete(adc_ctx.adc_periodic_timer));
     // Tear Down
     err = adc_oneshot_del_unit(adc_ctx.adc1_handle);
     if (err) {
-        ESP_LOGE(TAG, "failed to adc_oneshot_del_unit adc1");
+        ESP_LOGE(TAG, "[%s] failed to adc_oneshot_del_unit adc1", __func__);
     }
     if (adc_ctx.do_calibration1_chan0) {
         E_adc_calibration_deinit(adc_ctx.adc1_cali_chan0_handle);
@@ -363,7 +368,7 @@ float convertVoltage(int32_t volt) {
 int32_t adc_read_count(uint16_t count, uint16_t delay) {
     int reading = adc_read(), cur = reading;  // 2076
     for (uint16_t i = 0; i < count; i++) {
-        cur = adc_read() * 0.8 + reading * 0.2;
+        cur = adc_read(); // * 0.8 + reading * 0.2;
         reading = (cur + reading * (count - 1)) / count;
         //reading += adc_read();
         if (delay)
@@ -378,6 +383,7 @@ void volt_update(float calibration) {
 #else
 void volt_update() {
 #endif
+    ILOG(TAG, "[%s]", __FUNCTION__);
     float reading = convertVoltage(adc_read_count(5, 0));
 #ifdef USE_CUSTOM_CALIBRATION_VAL
     float corr = (calibration == 0||calibration==1) ? reading : reading * calibration;
@@ -395,7 +401,6 @@ void volt_update() {
     }
     if(i==j) --i;
     adj = ((float)(3100 + (i*50)) / (float)td_s3_adj[i]);
-    ESP_LOGD(TAG, "[%s] Reading:%f Voltage[%d]: %"PRIu16", adj: %f, level: %d", __FUNCTION__, reading, i, td_s3_adj[i], adj, (3100 + (i*50)));
     //adj = td_s3_adj[i].adjustment;
 #endif
     if(adj!=1&&adj!=0)
@@ -404,14 +409,16 @@ void volt_update() {
         adc_ctx.voltage_row[++adc_ctx.voltage_row_index % VOLTAGE_ROW_SIZE] = (uint32_t)corr*100;
         xSemaphoreGive(adc_ctx.xMutex);
     }
+#if defined(CONFIG_LOGGER_ADC_LOG_LEVEL_TRACE)
     for(int i=0; i<VOLTAGE_ROW_SIZE; ++i) {
-        ESP_LOGD(TAG, "[%s] Voltage[%d]: %d", __FUNCTION__, i, adc_ctx.voltage_row[i]);
+        printf("* [%s] voltage[%d]: %d\n", __FUNCTION__, i, adc_ctx.voltage_row[i]);
     }
-// #ifdef USE_CUSTOM_CALIBRATION_VAL
-//     ESP_LOGD(TAG, "[%s] Voltage computed: %f, calibration: %f,  corr: %f, adj: %f", __FUNCTION__, reading, calibration, corr, adj);
-// #else
-     ESP_LOGD(TAG, "[%s] Voltage computed: %f,  corr: %f, adj: %f rowindex: %ld", __FUNCTION__, reading, corr, adj, (adc_ctx.voltage_row_index % VOLTAGE_ROW_SIZE));
-// #endif
+#endif
+#ifdef USE_CORRECTION
+    ILOG(TAG, "[%s] reading: %f corr: %f adj: %f puttoindex: %ld; corr base: td_s3_adj[%hhu]: %hu / %d", __FUNCTION__, reading, corr, adj, (adc_ctx.voltage_row_index % VOLTAGE_ROW_SIZE), i, td_s3_adj[i], (3100 + (i*50)));
+#else
+    ILOG(TAG, "[%s] reading: %f corr: %f adj: %f puttoindex: %ld", __FUNCTION__, reading, corr, adj, (adc_ctx.voltage_row_index % VOLTAGE_ROW_SIZE));
+#endif
     esp_event_post(ADC_EVENT, ADC_EVENT_VOLTAGE_UPDATE, &corr, sizeof(corr), portMAX_DELAY);
 }
 
@@ -420,7 +427,7 @@ float volt_read(float calibration) {
 #else
 float volt_read() {
 #endif
-
+    ILOG(TAG, "[%s]", __FUNCTION__);
     //if(adc_ctx.voltage_row_index < 3)
         return (float)adc_ctx.voltage_row[adc_ctx.voltage_row_index % VOLTAGE_ROW_SIZE]/1000/100;
     //return (float)smooth_int(&(adc_ctx.voltage_row[0]), adc_ctx.voltage_row_index, VOLTAGE_ROW_SIZE, 1) / 1000/100;
@@ -428,20 +435,28 @@ float volt_read() {
 
 int adc_read() {
     esp_err_t err = 0;
-    // ESP_LOGD(TAG,"[%s]", __FUNCTION__);
+    // DLOG(TAG,"[%s]", __FUNCTION__);
     uint16_t adc_reading = 0;
     err = adc_oneshot_read(adc_ctx.adc1_handle, E_ADC1_CHAN0, &adc_ctx.adc_raw);
     if (err) {
-        ESP_LOGE(TAG, "failed to adc_oneshot_read adc1 chan0");
+        ESP_LOGE(TAG, "[%s] failed to adc_oneshot_read adc1 chan0", __func__);
     }
-    ESP_LOGD(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, E_ADC1_CHAN0, adc_ctx.adc_raw);
+#if defined(CONFIG_LOGGER_ADC_LOG_LEVEL_TRACE)
+    printf("* [%s] ADC%d channel[%d]: raw: %d mV", __func__, ADC_UNIT_1 + 1, E_ADC1_CHAN0, adc_ctx.adc_raw);
+#endif
     if (adc_ctx.do_calibration1_chan0) {
         err = adc_cali_raw_to_voltage(adc_ctx.adc1_cali_chan0_handle, adc_ctx.adc_raw, &adc_ctx.voltage);
         if (err) {
-            ESP_LOGE(TAG, "failed to adc_cali_raw_to_voltage adc1 chan0");
+            ESP_LOGE(TAG, "[%s] failed to adc_cali_raw_to_voltage adc1 chan0", __func__);
         }
-        ESP_LOGD(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, E_ADC1_CHAN0, adc_ctx.voltage);
+#if defined(CONFIG_LOGGER_ADC_LOG_LEVEL_TRACE)
+        printf(", calibr: %d mV\n", adc_ctx.voltage);
+#endif
     }
+#if defined(CONFIG_LOGGER_ADC_LOG_LEVEL_TRACE)
+    else
+         printf("\n");
+#endif
 
     adc_reading = adc_ctx.voltage;
     return adc_reading;
