@@ -53,6 +53,7 @@ float convertVoltage(int32_t volt);
 #define DMEAS_END(a, b, ...) ((void)0)
 #define ILOG LOG_INFO
 #define IMEAS_START MEAS_START
+#define IMEAS_END MEAS_END
 #define WLOG LOG_INFO
 #define WMEAS_START MEAS_START
 #define WMEAS_END MEAS_END
