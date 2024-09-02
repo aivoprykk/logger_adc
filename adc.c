@@ -352,8 +352,10 @@ int deinit_adc() {
     if (adc_ctx.do_calibration1_chan0) {
         E_adc_calibration_deinit(adc_ctx.adc1_cali_chan0_handle);
     }
-    if(adc_ctx.xMutex != NULL)
+    if(adc_ctx.xMutex != NULL){
         vSemaphoreDelete(adc_ctx.xMutex);
+        adc_ctx.xMutex = NULL;
+    }
     return err;
 }
 
