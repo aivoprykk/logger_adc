@@ -1,7 +1,7 @@
 menu "Logger ADC Module Options"
     choice
         bool "Default log verbosity"
-        default LOGGER_ADC_LOG_LEVEL_WARN
+        default LOGGER_ADC_LOG_LEVEL_ERROR
         help
             Specify how important log should be added.
         config LOGGER_ADC_LOG_LEVEL_TRACE
