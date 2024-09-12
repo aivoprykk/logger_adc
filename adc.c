@@ -22,6 +22,8 @@
 
 #include "esp_timer.h"
 
+#include "logger_common.h"
+
 // #if CONFIG_VERBOSE_BUILD
 // // The local log level must be defined before including esp_log.h
 // // Set the maximum log level for this source file
@@ -422,6 +424,10 @@ void volt_update() {
 #else
     ILOG(TAG, "[%s] reading: %f corr: %f adj: %f puttoindex: %ld", __FUNCTION__, reading, corr, adj, (adc_ctx.voltage_row_index % VOLTAGE_ROW_SIZE));
 #endif
+#if (CONFIG_LOGGER_ADC_LOG_LEVEL < 2)
+    task_memory_info(__func__);
+#endif
+
     esp_event_post(ADC_EVENT, ADC_EVENT_VOLTAGE_UPDATE, &corr, sizeof(corr), portMAX_DELAY);
 }
 

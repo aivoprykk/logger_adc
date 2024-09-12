@@ -4,5 +4,5 @@ idf_component_register(
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
     REQUIRES esp_event
-    PRIV_REQUIRES esp_adc esp_timer
+    PRIV_REQUIRES esp_adc esp_timer logger_common
 )
