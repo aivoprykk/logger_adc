@@ -1,3 +1,18 @@
+#include "adc.h"
+#include "adc_events.h"
+
+ESP_EVENT_DEFINE_BASE(ADC_EVENT);
+#if (CONFIG_ADC_LOG_LEVEL < 2 || CONFIG_LOGGER_GLOBAL_LOG_LEVEL < 3)
+static const char * _adc_event_strings[] = { ADC_EVENT_LIST(STRINGIFY) };
+const char * adc_event_strings(int id) {
+    return _adc_event_strings[id];
+}
+#else
+const char * adc_event_strings(int id) {return "ADC_EVENT";}
+#endif
+
+#if defined(CONFIG_LOGGER_ADC_ENABLED)
+
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -9,12 +24,10 @@
 #include "freertos/timers.h"
 #include "freertos/semphr.h"
 #include "soc/soc_caps.h"
-#include <esp_idf_version.h>
-#include <esp_log.h>
 
-#include "adc.h"
+#include <esp_idf_version.h>
+
 #include "adc_private.h"
-#include "adc_events.h"
 
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
@@ -22,22 +35,11 @@
 
 #include "esp_timer.h"
 
-#include "logger_common.h"
-
 // #if CONFIG_VERBOSE_BUILD
 // // The local log level must be defined before including esp_log.h
 // // Set the maximum log level for this source file
 // #define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
 // #endif
-
-ESP_EVENT_DEFINE_BASE(ADC_EVENT);
-
-const char * adc_event_strings[] = {
-    "ADC_EVENT_BATTERY_LOW",                  // battery level is low
-    "ADC_EVENT_BATTERY_CRITICAL",             // battery level is critical
-    "ADC_EVENT_BATTERY_OK",                   // battery level is ok
-    "ADC_EVENT_VOLTAGE_UPDATE",               // voltage is updated
-};
 
 const static char *TAG = "adc";
 
@@ -47,22 +49,57 @@ const static char *TAG = "adc";
 #define DEFAULT_VREF 1114
 #define NO_OF_SAMPLES 64
 
-#if ESP_IDF_VERSION_MAJOR < 5 || (ESP_IDF_VERSION_MAJOR == 5 && ESP_IDF_VERSION_MINOR <= 1 && ESP_IDF_VERSION_PATCH < 3)
-#define ADC_ATTEN ADC_ATTEN_DB_11
+#define JOIN(x, y) JOIN_AGAIN(x, y)
+#define JOIN_AGAIN(x, y) x ## y
+
+#if defined(CONFIG_ADC_UNIT) && (CONFIG_ADC_UNIT == 1 || CONFIG_ADC_UNIT == 2)
+#define _ADC_UNIT_0 JOIN(ADC_UNIT_, CONFIG_ADC_UNIT)
 #else
-#define ADC_ATTEN ADC_ATTEN_DB_12
+#define _ADC_UNIT_0 ADC_UNIT_1
 #endif
 
-#if CONFIG_IDF_TARGET_ESP32
-#define E_ADC1_CHAN0 ADC_CHANNEL_7
-#if E_USE_ADC1_2
-#define E_ADC1_CHAN1 ADC_CHANNEL_5
+#if defined(CONFIG_ADC_ATTEN)
+#if (CONIG_ADC_ATTEN > 0 && CONIG_ADC_ATTEN <= 2) || CONFIG_ADC_ATTEN == 25
+#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 2_5)
+#elif CONFIG_ADC_ATTEN <= 6
+#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 6)
+#elif CONFIG_ADC_ATTEN <= 12
+#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 12)
+#else
+#define _ADC_ATTEN ADC_ATTEN_DB_0
 #endif
 #else
-#define E_ADC1_CHAN0 ADC_CHANNEL_3
-#if E_USE_ADC1_2
-#define E_ADC1_CHAN1 ADC_CHANNEL_0
+#if ESP_IDF_VERSION_MAJOR < 5 || (ESP_IDF_VERSION_MAJOR == 5 && ESP_IDF_VERSION_MINOR <= 1 && ESP_IDF_VERSION_PATCH < 3)
+#define _ADC_ATTEN ADC_ATTEN_DB_11
+#else
+#define _ADC_ATTEN ADC_ATTEN_DB_12
 #endif
+#endif
+
+#if defined(CONFIG_ADC_CHANNEL)
+#define _ADC_CHANNEL_0 JOIN(ADC_CHANNEL_, CONFIG_ADC_CHANNEL)
+#else
+#if CONFIG_IDF_TARGET_ESP32
+#define _ADC_CHANNEL_0 ADC_CHANNEL_7
+#if E_USE_ADC1_2
+#define _ADC_CHANNEL_1 ADC_CHANNEL_5
+#endif
+#else
+#define _ADC_CHANNEL_0 ADC_CHANNEL_3
+#if E_USE_ADC1_2
+#define _ADC_CHANNEL_1 ADC_CHANNEL_0
+#endif
+#endif
+#endif
+
+#if defined(CONFIG_ADC_BITWITH)
+#if CONFIG_ADC_BITWITH == 0 || CONFIG_ADC_BITWITH < 9 || CONFIG_ADC_BITWITH > 12
+#define _ADC_BITWITH ADC_BITWIDTH_DEFAULT
+#else
+#define _ADC_BITWITH JOIN(ADC_WIDTH_BIT_, CONFIG_ADC_BITWITH)
+#endif
+#else
+#define _ADC_BITWITH ADC_BITWIDTH_DEFAULT
 #endif
 
 #define VOLTAGE_ROW_SIZE 6
@@ -244,7 +281,7 @@ unsigned char E_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc
             .unit_id = unit,
             .chan = channel,
             .atten = atten,
-            .bitwidth = ADC_BITWIDTH_DEFAULT,
+            .bitwidth = _ADC_BITWITH,
         };
         ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handle);
         if (ret == ESP_OK) {
@@ -259,7 +296,7 @@ unsigned char E_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc
         adc_cali_line_fitting_config_t cali_config = {
             .unit_id = unit,
             .atten = atten,
-            .bitwidth = ADC_BITWIDTH_DEFAULT,
+            .bitwidth = _ADC_BITWITH,
         };
         ret = adc_cali_create_scheme_line_fitting(&cali_config, &handle);
         if (ret == ESP_OK) {
@@ -309,7 +346,7 @@ int init_adc() {
     int ret = 0;
     
     adc_oneshot_unit_init_cfg_t init_config1 = {
-        .unit_id = ADC_UNIT_1,
+        .unit_id = _ADC_UNIT_0,
     };
     err = adc_oneshot_new_unit(&init_config1, &adc_ctx.adc1_handle);
     if (err) {
@@ -318,16 +355,16 @@ int init_adc() {
 
     //-------------ADC1 Config---------------//
     adc_oneshot_chan_cfg_t config = {
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-        .atten = ADC_ATTEN,
+        .bitwidth = _ADC_BITWITH,
+        .atten = _ADC_ATTEN,
     };
-    err = adc_oneshot_config_channel(adc_ctx.adc1_handle, E_ADC1_CHAN0, &config);
+    err = adc_oneshot_config_channel(adc_ctx.adc1_handle, _ADC_CHANNEL_0, &config);
     if (err) {
         ESP_LOGE(TAG, "[%s] failed to adc_oneshot_config_channel adc1 chan0", __func__);
     }
 
     //-------------ADC1 Calibration Init---------------//
-    adc_ctx.do_calibration1_chan0 = E_adc_calibration_init(ADC_UNIT_1, E_ADC1_CHAN0, ADC_ATTEN, &adc_ctx.adc1_cali_chan0_handle);
+    adc_ctx.do_calibration1_chan0 = E_adc_calibration_init(_ADC_UNIT_0, _ADC_CHANNEL_0, _ADC_ATTEN, &adc_ctx.adc1_cali_chan0_handle);
 
     if(adc_ctx.xMutex == NULL)
         adc_ctx.xMutex = xSemaphoreCreateMutex();
@@ -446,12 +483,12 @@ int adc_read() {
     esp_err_t err = 0;
     // DLOG(TAG,"[%s]", __FUNCTION__);
     uint16_t adc_reading = 0;
-    err = adc_oneshot_read(adc_ctx.adc1_handle, E_ADC1_CHAN0, &adc_ctx.adc_raw);
+    err = adc_oneshot_read(adc_ctx.adc1_handle, _ADC_CHANNEL_0, &adc_ctx.adc_raw);
     if (err) {
         ESP_LOGE(TAG, "[%s] failed to adc_oneshot_read adc1 chan0", __func__);
     }
 #if defined(CONFIG_LOGGER_ADC_LOG_LEVEL_TRACE)
-    printf("* [%s] ADC%d channel[%d]: raw: %d mV", __func__, ADC_UNIT_1 + 1, E_ADC1_CHAN0, adc_ctx.adc_raw);
+    printf("* [%s] ADC%d channel[%d]: raw: %d mV", __func__, _ADC_UNIT_0 + 1, _ADC_CHANNEL_0, adc_ctx.adc_raw);
 #endif
     if (adc_ctx.do_calibration1_chan0) {
         err = adc_cali_raw_to_voltage(adc_ctx.adc1_cali_chan0_handle, adc_ctx.adc_raw, &adc_ctx.voltage);
@@ -470,3 +507,5 @@ int adc_read() {
     adc_reading = adc_ctx.voltage;
     return adc_reading;
 }
+
+#endif // CONFIG_LOGGER_ADC_ENABLED

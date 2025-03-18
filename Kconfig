@@ -1,4 +1,87 @@
 menu "Logger ADC Module Options"
+    config LOGGER_ADC_ENABLED
+        bool "Enable logger_adc module"
+        default y
+        help
+            Enable logger_adc module.
+    if LOGGER_ADC_ENABLED
+    config ADC_UNIT
+        int "ADC unit (1 or 2)"
+        range 1 2
+        default 1
+        help
+            Specify the ADC unit to use.
+    config ADC_CHANNEL
+        int "ADC channel (0-9, see help)"
+        range 0 9
+        default 3 if IDF_TARGET_ESP32S3
+        default 7
+        help
+            Specify the ADC channel to use (0-9).
+            Esp32:
+                ADC1_CHANNEL_0 = 0
+                ADC1 channel 0 is GPIO36
+                ADC1 channel 1 is GPIO37
+                ADC1 channel 2 is GPIO38
+                ADC1 channel 3 is GPIO39
+                ADC1 channel 4 is GPIO32
+                ADC1 channel 5 is GPIO33
+                ADC1 channel 6 is GPIO34
+                ADC1 channel 7 is GPIO35
+                ADC2 channel 0 is GPIO4 (ESP32), GPIO11 (ESP32-S2)
+                ADC2 channel 1 is GPIO0 (ESP32), GPIO12 (ESP32-S2)
+                ADC2 channel 2 is GPIO2 (ESP32), GPIO13 (ESP32-S2)
+                ADC2 channel 3 is GPIO15 (ESP32), GPIO14 (ESP32-S2)
+                ADC2 channel 4 is GPIO13 (ESP32), GPIO15 (ESP32-S2)
+                ADC2 channel 5 is GPIO12 (ESP32), GPIO16 (ESP32-S2)
+                ADC2 channel 6 is GPIO14 (ESP32), GPIO17 (ESP32-S2)
+                ADC2 channel 7 is GPIO27 (ESP32), GPIO18 (ESP32-S2)
+                ADC2 channel 8 is GPIO25 (ESP32), GPIO19 (ESP32-S2)
+                ADC2 channel 9 is GPIO26 (ESP32), GPIO20 (ESP32-S2)
+            Esp32-S3:
+                ADC1 channel 0 is GPIO1
+                ADC1 channel 1 is GPIO2
+                ADC1 channel 2 is GPIO3
+                ADC1 channel 3 is GPIO4
+                ADC1 channel 4 is GPIO5
+                ADC1 channel 5 is GPIO6
+                ADC1 channel 6 is GPIO7
+                ADC1 channel 7 is GPIO8
+                ADC1 channel 8 is GPIO9
+                ADC1 channel 9 is GPIO10
+                ADC2 channel 0 is GPIO4 (ESP32), GPIO11 (ESP32-S2)
+                ADC2 channel 1 is GPIO0 (ESP32), GPIO12 (ESP32-S2)
+                ADC2 channel 2 is GPIO2 (ESP32), GPIO13 (ESP32-S2)
+                ADC2 channel 3 is GPIO15 (ESP32), GPIO14 (ESP32-S2)
+                ADC2 channel 4 is GPIO13 (ESP32), GPIO15 (ESP32-S2)
+                ADC2 channel 5 is GPIO12 (ESP32), GPIO16 (ESP32-S2)
+                ADC2 channel 6 is GPIO14 (ESP32), GPIO17 (ESP32-S2)
+                ADC2 channel 7 is GPIO27 (ESP32), GPIO18 (ESP32-S2)
+                ADC2 channel 8 is GPIO25 (ESP32), GPIO19 (ESP32-S2)
+                ADC2 channel 9 is GPIO26 (ESP32), GPIO20 (ESP32-S2)
+    config ADC_ATTEN
+        int "ADC attenuation ([0 25 6 12]db, see help)"
+        range 0 12
+        default 12
+        help
+            In order to convert voltages larger than Vref, input voltages can be
+            attenuated before being input to the ADCs. There are 4 available 
+            attenuation options, the higher the attenuation is, the higher the 
+            measurable input voltage could be.
+            - ADC_ATTEN_DB_0 No input attenuation, ADC can measure up to approx.
+            - ADC_ATTEN_DB_2_5 The input voltage of ADC will be attenuated extending 
+                the range of measurement by about 2.5 dB.
+            - ADC_ATTEN_DB_6 The input voltage of ADC will be attenuated extending 
+                the range of measurement by about 6 dB.
+            - ADC_ATTEN_DB_12 The input voltage of ADC will be attenuated extending 
+                the range of measurement by about 12 dB.
+    config ADC_BITWITH
+        int "ADC width (1-13 bits, 0 for default)"
+        range 0 13
+        default 0
+        help
+            The ADC width can be set to 0 (default) or 9-13(bits). 
+            The higher the width is, the higher the resolution of the ADC will be.
     choice
         bool "Default log verbosity"
         default LOGGER_ADC_LOG_LEVEL_ERROR
@@ -25,4 +108,5 @@ menu "Logger ADC Module Options"
         default 3 if LOGGER_ADC_LOG_LEVEL_ERROR
         default 4 if LOGGER_ADC_LOG_LEVEL_USER
         default 5 if LOGGER_ADC_LOG_LEVEL_NONE
+    endif
 endmenu
