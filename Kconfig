@@ -5,6 +5,16 @@ menu "Logger ADC Module Options"
         help
             Enable logger_adc module.
     if LOGGER_ADC_ENABLED
+    choice 
+        bool "ADC mode"
+        default LOGGER_ADC_MODE_ONESHOT
+        help
+            Specify the ADC mode to use.
+        config LOGGER_ADC_MODE_CONTINUOUS
+            bool "Continuous mode"
+        config LOGGER_ADC_MODE_ONESHOT
+            bool "One-shot mode"
+    endchoice
     config ADC_UNIT
         int "ADC unit (1 or 2)"
         range 1 2
@@ -75,13 +85,13 @@ menu "Logger ADC Module Options"
                 the range of measurement by about 6 dB.
             - ADC_ATTEN_DB_12 The input voltage of ADC will be attenuated extending 
                 the range of measurement by about 12 dB.
-    config ADC_BITWITH
-        int "ADC width (1-13 bits, 0 for default)"
+    config ADC_BITWIDTH
+        int "ADC bit width (1-13 bits, 0 for default)"
         range 0 13
         default 0
         help
-            The ADC width can be set to 0 (default) or 9-13(bits). 
-            The higher the width is, the higher the resolution of the ADC will be.
+            The ADC bit width can be set to 0 (default) or 9-13(bits). 
+            The higher the bit width is, the higher the resolution of the ADC will be.
     choice
         bool "Default log verbosity"
         default LOGGER_ADC_LOG_LEVEL_ERROR
