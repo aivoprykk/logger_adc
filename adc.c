@@ -27,6 +27,7 @@
 
 #include "adc.h"
 #include "adc_events.h"
+#include "driver/gpio.h"
 
 ESP_EVENT_DEFINE_BASE(ADC_EVENT);
 #if (C_LOG_LEVEL < 2)
@@ -38,67 +39,22 @@ const char * adc_event_strings(int id) {
 const char * adc_event_strings(int id) {return "ADC_EVENT";}
 #endif
 
-const static char *TAG = "adc";
-
-/// ADC_UNIT definition
-#if defined(CONFIG_ADC_UNIT) && (CONFIG_ADC_UNIT == 1 || CONFIG_ADC_UNIT == 2)
-#define _ADC_UNIT_0 JOIN(ADC_UNIT_, CONFIG_ADC_UNIT)
-#else
-#define _ADC_UNIT_0 ADC_UNIT_1
-#endif
-/// ADC_ATTEN definition
-#if defined(CONFIG_ADC_ATTEN)
-#if (CONIG_ADC_ATTEN > 0 && CONIG_ADC_ATTEN <= 2) || CONFIG_ADC_ATTEN == 25
-#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 2_5)
-#elif CONFIG_ADC_ATTEN <= 6
-#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 6)
-#elif CONFIG_ADC_ATTEN <= 12
-#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 12)
-#else
-#define _ADC_ATTEN ADC_ATTEN_DB_0
-#endif
-#else
-#if ESP_IDF_VERSION_MAJOR < 5 || (ESP_IDF_VERSION_MAJOR == 5 && ESP_IDF_VERSION_MINOR <= 1 && ESP_IDF_VERSION_PATCH < 3)
-#define _ADC_ATTEN ADC_ATTEN_DB_11
-#else
-#define _ADC_ATTEN ADC_ATTEN_DB_12
-#endif
-#endif
-/// ADC_CHANNEL definition
-#if defined(CONFIG_ADC_CHANNEL)
-#define _ADC_CHANNEL_0 JOIN(ADC_CHANNEL_, CONFIG_ADC_CHANNEL)
-#else
-#if CONFIG_IDF_TARGET_ESP32
-#define _ADC_CHANNEL_0 ADC_CHANNEL_7
-#if E_USE_ADC1_2
-#define _ADC_CHANNEL_1 ADC_CHANNEL_5
-#endif
-#else
-#define _ADC_CHANNEL_0 ADC_CHANNEL_3
-#if E_USE_ADC1_2
-#define _ADC_CHANNEL_1 ADC_CHANNEL_0
-#endif
-#endif
-#endif
-/// ADC_BITWIDTH definition
-#if defined(CONFIG_ADC_BITWIDTH)
-#if CONFIG_ADC_BITWIDTH == 0 || CONFIG_ADC_BITWIDTH < 9 || CONFIG_ADC_BITWIDTH > 12
-#define _ADC_BITWIDTH ADC_BITWIDTH_DEFAULT
-#else
-#define _ADC_BITWIDTH JOIN(ADC_WIDTH_BIT_, CONFIG_ADC_BITWIDTH)
-#endif
-#else
-#define _ADC_BITWIDTH ADC_BITWIDTH_DEFAULT
-#endif
+static const char *TAG = "adc";
 
 #define V_GRAPH_LIPO_LEN 21
 #define ADJ_LENGTH 24
 
 typedef struct adc_context_s {
+    uint8_t on_ac;
     uint32_t adc_raw;
     uint32_t adc_voltage;
     uint8_t do_calibration;
     adc_cali_handle_t adc1_cali_handle;
+#if defined(AC_DETECTABLE ) && !(defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3) || defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3_AMOLED))
+    uint32_t running_sum;
+    uint32_t running_avg;
+    uint32_t m_avg[3];
+#endif
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
     adc_oneshot_unit_handle_t adc1_handle;
     esp_timer_handle_t adc_periodic_timer;
@@ -116,7 +72,6 @@ typedef struct adc_context_s {
 
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
 #define CTX_PART .adc_periodic_timer = NULL, \
-    .result = {0}, \
     .result_index = -1, \
     .xMutex = NULL,
 #elif defined(CONFIG_LOGGER_ADC_MODE_CONTINUOUS)
@@ -125,18 +80,29 @@ typedef struct adc_context_s {
     .result = {0}, \
     .task_is_running = 1,
 #endif
+#if defined(AC_DETECTABLE ) && !(defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3) || defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3_AMOLED))
+#define AC_DET_PART .on_ac = 0, \
+    .running_sum = 0, \
+    .running_avg = 0, \
+    .m_avg = {0},
+#else
+#define AC_DET_PART
+#endif
 #define ADC_CONTEXT_DEFAULT { \
+    .on_ac = 0, \
     .adc_raw = 0, \
     .adc_voltage = 0, \
     .do_calibration = 0, \
     .adc1_cali_handle = NULL, \
     .adc1_handle = NULL, \
+    .result = {0}, \
+    AC_DET_PART \
     CTX_PART \
 }
 static adc_context_t adc_ctx = ADC_CONTEXT_DEFAULT;
 
 static const uint16_t v_graph_lipo[V_GRAPH_LIPO_LEN] = {
-    32700,  // 0
+    33000,  // 0
     36100,  // 5
     36900,  // 10
     37100,  // 15
@@ -257,9 +223,13 @@ static void adc_calibration_deinit(adc_cali_handle_t handle) {
     ILOG(TAG, "[%s]", __func__);
     DLOG(TAG, "[%s] deregister %s calibration scheme\n", __func__, cali_mode);
 #if defined(ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED)
-    ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
+    if(adc_cali_delete_scheme_curve_fitting(handle)) {
+        ELOG(TAG, "[%s] Failed to delete curve fitting scheme\n", __func__);
+    }
 #elif defined(ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED)
-    ESP_ERROR_CHECK(adc_cali_delete_scheme_line_fitting(handle));
+    if(adc_cali_delete_scheme_line_fitting(handle)) {
+        ELOG(TAG, "[%s] Failed to delete line fitting scheme\n", __func__);
+    }
 #endif
 }
 
@@ -267,15 +237,21 @@ static uint32_t adc_read_raw() {
     esp_err_t err = 0;
     int v = 0;
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
-    ESP_ERROR_CHECK(adc_oneshot_read(adc_ctx.adc1_handle, _ADC_CHANNEL_0, &v));
+    if(adc_oneshot_read(adc_ctx.adc1_handle, _ADC_CHANNEL_0, &v)) {
+        ELOG(TAG, "[%s] Failed to read ADC %d\n", __func__, _ADC_CHANNEL_0);
+        return 0;
+    }
     adc_ctx.adc_raw = v;
 #endif
     if (adc_ctx.do_calibration) {
-        ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc_ctx.adc1_cali_handle, adc_ctx.adc_raw, &v));
+        if(adc_cali_raw_to_voltage(adc_ctx.adc1_cali_handle, adc_ctx.adc_raw, &v)) {
+            ELOG(TAG, "[%s] Failed to convert\n", __func__);
+            return 0;
+        }
         adc_ctx.adc_voltage = v;
     }
     else adc_ctx.adc_voltage = adc_ctx.adc_raw;
-    TLOG(TAG, "[%s] ADC%d channel[%d]: raw: %lu, calibrated: %lu\n", __func__, _ADC_UNIT_0 + 1, _ADC_CHANNEL_0, adc_ctx.adc_raw, adc_ctx.adc_voltage);
+    // TLOG(TAG, "[%s] ADC%d channel[%d]: raw: %lu, calibrated: %lu\n", __func__, _ADC_UNIT_0 + 1, _ADC_CHANNEL_0, adc_ctx.adc_raw, adc_ctx.adc_voltage);
     return adc_ctx.adc_voltage;
 }
 
@@ -287,29 +263,62 @@ static uint32_t adc_read_count(uint16_t count, uint16_t delay) {
         cur = adc_read_raw(); // * 0.8 + reading * 0.2;
         reading = (cur + reading * (count - 1)) / count;
         //reading += adc_read_raw();
-        if (delay) vTaskDelay((delay + (portTICK_PERIOD_MS - 1)) / portTICK_PERIOD_MS);
+        if (delay) delay_ms(delay);
     }
     //return (count ? reading / count : reading) * 100;
     return reading*100;
 }
-
+#if defined(AC_DETECTABLE ) && !(defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3) || defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3_AMOLED))
+static uint8_t result_avg_efficient() {
+    uint8_t index = adc_ctx.result_index % RESULT_SIZE, prev_index = (adc_ctx.result_index - 1) % RESULT_SIZE;
+    if(adc_ctx.result_index >= RESULT_SIZE) adc_ctx.running_sum -= (adc_ctx.result[prev_index]);
+    adc_ctx.running_sum += (adc_ctx.result[index]);
+    if(adc_ctx.result_index >= RESULT_SIZE) {
+        if(index == 0) {
+            if(adc_ctx.m_avg[1]) adc_ctx.m_avg[2] = adc_ctx.m_avg[1]; // 2. RESULT_SIZE avg set
+            if(adc_ctx.m_avg[0]) adc_ctx.m_avg[1] = adc_ctx.m_avg[0]; // 1. RESULT_SIZE avg set
+            adc_ctx.m_avg[0] = adc_ctx.running_avg; // previous RESULT_SIZE avg set
+            TLOG(TAG, "[%s] new set index 0, avg updated\n", __func__);
+        }
+        adc_ctx.running_avg = adc_ctx.running_sum / RESULT_SIZE;
+        TLOG(TAG,"[%s] prev avg: {%lu, %lu, %lu}, avg: %lu, index: %hhu\n", __func__, adc_ctx.m_avg[2], adc_ctx.m_avg[1], adc_ctx.m_avg[0], adc_ctx.running_avg, index);
+    }
+    return (adc_ctx.m_avg[2] && adc_ctx.m_avg[0] > adc_ctx.m_avg[2]) ? 1 : 0;
+}
+#endif
 static void adc_update(void*arg) {
     ILOG(TAG, "[%s]", __func__);
     uint32_t reading = VOLTAGE_CONV(adc_read_count(5, 0));
-    uint32_t corr = reading;
     if(xSemaphoreTake(adc_ctx.xMutex, portMAX_DELAY)) {
-        adc_ctx.result[++adc_ctx.result_index % RESULT_SIZE] = corr;
+        adc_ctx.result[++adc_ctx.result_index % RESULT_SIZE] = reading;
         xSemaphoreGive(adc_ctx.xMutex);
     }
-#if (C_LOG_LEVEL < 1)
-    for(int i=0; i<RESULT_SIZE; ++i) TLOG(TAG,"* [%s] voltage[%d]: %lu\n", __func__, i, adc_ctx.result[i]);
-    TLOG(TAG,"[%s] reading: %lu corr: %lu puttoindex: %ld\n", __func__, reading, corr, (adc_ctx.result_index % RESULT_SIZE));
+// #if (C_LOG_LEVEL < 1)
+//     for(int i=RESULT_SIZE-1, j=adc_ctx.result_index-i; i>=0; --i, ++j) 
+//         TLOG(TAG,"* [%s] voltage[%d]: %lu\n", __func__, 
+//             (j % RESULT_SIZE), 
+//             (j % RESULT_SIZE) < 0 ? 0 : adc_ctx.result[j % RESULT_SIZE]);
+//     TLOG(TAG,"[%s] reading: %lu puttoindex: %ld\n", __func__, reading, (adc_ctx.result_index % RESULT_SIZE));
+// #endif
+    esp_event_post(ADC_EVENT, ADC_EVENT_UPDATE, &reading, sizeof(reading), portMAX_DELAY);
+#if defined(AC_DETECTABLE)
+    uint8_t on_ac = 0;
+#if (defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3) || defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3_AMOLED))
+    on_ac = gpio_get_level(GPIO_NUM_15);
+#else
+    on_ac = result_avg_efficient();
 #endif
-
-    esp_event_post(ADC_EVENT, ADC_EVENT_UPDATE, &corr, sizeof(corr), portMAX_DELAY);
+    if (on_ac != adc_ctx.on_ac) {
+        adc_ctx.on_ac = on_ac;
+        esp_event_post(ADC_EVENT, on_ac ? ADC_EVENT_CHARGE_STARTED : ADC_EVENT_CHARGE_STOPPED, &adc_ctx.on_ac, sizeof(adc_ctx.on_ac), portMAX_DELAY);
+    }
+#endif
 }
-
 #endif
+
+uint8_t adc_on_ac() {
+    return adc_ctx.on_ac;
+}
 
 #if defined(CONFIG_LOGGER_ADC_MODE_CONTINUOUS)
 
@@ -355,12 +364,18 @@ esp_err_t adc_init(void) {
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = _ADC_UNIT_0,
     };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc_ctx.adc1_handle));
+    if(adc_oneshot_new_unit(&init_config1, &adc_ctx.adc1_handle)) {
+        ELOG(TAG, "[%s] Failed to create ADC unit\n", __func__);
+        return ESP_FAIL;
+    }
     adc_oneshot_chan_cfg_t adc_config = {
         .bitwidth = _ADC_BITWIDTH,
         .atten = _ADC_ATTEN,
     };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_ctx.adc1_handle, _ADC_CHANNEL_0, &adc_config));
+    if(adc_oneshot_config_channel(adc_ctx.adc1_handle, _ADC_CHANNEL_0, &adc_config)) {
+        ELOG(TAG, "[%s] Failed to config ADC channel\n", __func__);
+        return ESP_FAIL;
+    }
     if(adc_ctx.xMutex == NULL) adc_ctx.xMutex = xSemaphoreCreateMutex();
     adc_update(0);
     const esp_timer_create_args_t periodic_timer_args = {
@@ -413,8 +428,8 @@ esp_err_t adc_deinit() {
         adc_calibration_deinit(adc_ctx.adc1_cali_handle);
     }
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
-    ESP_ERROR_CHECK(esp_timer_stop(adc_ctx.adc_periodic_timer));
-    ESP_ERROR_CHECK(esp_timer_delete(adc_ctx.adc_periodic_timer));
+    esp_timer_stop(adc_ctx.adc_periodic_timer);
+    esp_timer_delete(adc_ctx.adc_periodic_timer);
     ESP_ERROR_CHECK(adc_oneshot_del_unit(adc_ctx.adc1_handle));
     if(adc_ctx.xMutex != NULL){
         vSemaphoreDelete(adc_ctx.xMutex);
@@ -423,7 +438,7 @@ esp_err_t adc_deinit() {
 #elif defined(CONFIG_LOGGER_ADC_MODE_CONTINUOUS)
     adc_ctx.task_is_running = 0;
     xTaskNotifyGive(adc_ctx.adc_task_handle);
-    ESP_ERROR_CHECK(adc_continuous_stop(adc_ctx.adc1_handle));
+    adc_continuous_stop(adc_ctx.adc1_handle);
     ESP_ERROR_CHECK(adc_continuous_deinit(adc_ctx.adc1_handle));
 #endif
     return err;

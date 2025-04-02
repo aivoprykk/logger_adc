@@ -10,6 +10,7 @@ int adc_init();
 int adc_deinit();
 float volt_read();
 uint8_t calc_bat_perc_v(float adc);
+uint8_t adc_on_ac();
 
 #ifdef __cplusplus
 }

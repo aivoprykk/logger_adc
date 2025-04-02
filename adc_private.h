@@ -25,7 +25,7 @@ extern "C" {
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
 
 #define NO_OF_SAMPLES 64
-#define RESULT_SIZE 6
+#define RESULT_SIZE 8
 
 #elif defined(CONFIG_LOGGER_ADC_MODE_CONTINUOUS)
 
@@ -42,6 +42,57 @@ extern "C" {
 #define ADC_GET_DATA(p_data)        ((p_data)->type2.data)
 #endif
 
+#endif
+
+/// ADC_UNIT definition
+#if defined(CONFIG_ADC_UNIT) && (CONFIG_ADC_UNIT == 1 || CONFIG_ADC_UNIT == 2)
+#define _ADC_UNIT_0 JOIN(ADC_UNIT_, CONFIG_ADC_UNIT)
+#else
+#define _ADC_UNIT_0 ADC_UNIT_1
+#endif
+/// ADC_ATTEN definition
+#if defined(CONFIG_ADC_ATTEN)
+#if (CONIG_ADC_ATTEN > 0 && CONIG_ADC_ATTEN <= 2) || CONFIG_ADC_ATTEN == 25
+#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 2_5)
+#elif CONFIG_ADC_ATTEN <= 6
+#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 6)
+#elif CONFIG_ADC_ATTEN <= 12
+#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 12)
+#else
+#define _ADC_ATTEN ADC_ATTEN_DB_0
+#endif
+#else
+#if ESP_IDF_VERSION_MAJOR < 5 || (ESP_IDF_VERSION_MAJOR == 5 && ESP_IDF_VERSION_MINOR <= 1 && ESP_IDF_VERSION_PATCH < 3)
+#define _ADC_ATTEN ADC_ATTEN_DB_11
+#else
+#define _ADC_ATTEN ADC_ATTEN_DB_12
+#endif
+#endif
+/// ADC_CHANNEL definition
+#if defined(CONFIG_ADC_CHANNEL)
+#define _ADC_CHANNEL_0 JOIN(ADC_CHANNEL_, CONFIG_ADC_CHANNEL)
+#else
+#if CONFIG_IDF_TARGET_ESP32
+#define _ADC_CHANNEL_0 ADC_CHANNEL_7
+#if E_USE_ADC1_2
+#define _ADC_CHANNEL_1 ADC_CHANNEL_5
+#endif
+#else
+#define _ADC_CHANNEL_0 ADC_CHANNEL_3
+#if E_USE_ADC1_2
+#define _ADC_CHANNEL_1 ADC_CHANNEL_0
+#endif
+#endif
+#endif
+/// ADC_BITWIDTH definition
+#if defined(CONFIG_ADC_BITWIDTH)
+#if CONFIG_ADC_BITWIDTH == 0 || CONFIG_ADC_BITWIDTH < 9 || CONFIG_ADC_BITWIDTH > 12
+#define _ADC_BITWIDTH ADC_BITWIDTH_DEFAULT
+#else
+#define _ADC_BITWIDTH JOIN(ADC_WIDTH_BIT_, CONFIG_ADC_BITWIDTH)
+#endif
+#else
+#define _ADC_BITWIDTH ADC_BITWIDTH_DEFAULT
 #endif
 
 #if (defined(CONFIG_LOGGER_USE_GLOBAL_LOG_LEVEL) && CONFIG_LOGGER_GLOBAL_LOG_LEVEL < CONFIG_LOGGER_ADC_LOG_LEVEL)
