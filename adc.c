@@ -383,15 +383,24 @@ esp_err_t adc_init(void) {
         .name = "periodic_adc",
         .arg = NULL
     };
-    ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &adc_ctx.adc_periodic_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(adc_ctx.adc_periodic_timer, 1000000));
+    if(esp_timer_create(&periodic_timer_args, &adc_ctx.adc_periodic_timer)){
+        ELOG(TAG, "[%s] Failed to create periodic timer\n", __func__);
+        return ESP_FAIL;
+    }
+    if(esp_timer_start_periodic(adc_ctx.adc_periodic_timer, 1000000)) {
+        ELOG(TAG, "[%s] Failed to start periodic timer\n", __func__);
+        return ESP_FAIL;
+    }
 #elif defined(CONFIG_LOGGER_ADC_MODE_CONTINUOUS)
     memset(&adc_ctx.result[0], 0xcc, READ_LEN);
     adc_continuous_handle_cfg_t adc_config = {
         .max_store_buf_size = 256,
         .conv_frame_size = READ_LEN,
     };
-    ESP_ERROR_CHECK(adc_continuous_new_handle(&adc_config, &adc_ctx.adc1_handle));
+    if(adc_continuous_new_handle(&adc_config, &adc_ctx.adc1_handle)) {
+        ELOG(TAG, "[%s] Failed to create ADC unit\n", __func__);
+        return ESP_FAIL;
+    }
     adc_continuous_config_t dig_cfg = {
         .sample_freq_hz = 20 * 1000,
         .conv_mode = ADC_CONV_MODE,
@@ -409,13 +418,22 @@ esp_err_t adc_init(void) {
     DLOG(TAG, "adc_patterns[0].channel is 0x%"PRIx8"\n", adc_patterns[0].channel);
     DLOG(TAG, "adc_patterns[0].unit is 0x%"PRIx8"\n", adc_patterns[0].unit);
     dig_cfg.adc_pattern = adc_patterns;
-    ESP_ERROR_CHECK(adc_continuous_config(adc_ctx.adc1_handle, &dig_cfg));
+    if(adc_continuous_config(adc_ctx.adc1_handle, &dig_cfg)){
+        ELOG(TAG, "[%s] Failed to config ADC continuous\n", __func__);
+        return ESP_FAIL;
+    }
     adc_continuous_evt_cbs_t cbs = {
         .on_conv_done = s_conv_done_cb,
     };
     xTaskCreatePinnedToCore(adc_task, "ADC Task", (8*256), NULL, 0, &adc_ctx.adc_task_handle, 0);
-    ESP_ERROR_CHECK(adc_continuous_register_event_callbacks(adc_ctx.adc1_handle, &cbs, NULL));
-    ESP_ERROR_CHECK(adc_continuous_start(adc_ctx.adc1_handle));
+    if(adc_continuous_register_event_callbacks(adc_ctx.adc1_handle, &cbs, NULL)) {
+        ELOG(TAG, "[%s] Failed to register event callbacks\n", __func__);
+        return ESP_FAIL;
+    }
+    if(adc_continuous_start(adc_ctx.adc1_handle)) {
+        ELOG(TAG, "[%s] Failed to start ADC continuous\n", __func__);
+        return ESP_FAIL;
+    }
     delay_ms(200);
 #endif
     return ret;
@@ -430,7 +448,7 @@ esp_err_t adc_deinit() {
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
     esp_timer_stop(adc_ctx.adc_periodic_timer);
     esp_timer_delete(adc_ctx.adc_periodic_timer);
-    ESP_ERROR_CHECK(adc_oneshot_del_unit(adc_ctx.adc1_handle));
+    adc_oneshot_del_unit(adc_ctx.adc1_handle);
     if(adc_ctx.xMutex != NULL){
         vSemaphoreDelete(adc_ctx.xMutex);
         adc_ctx.xMutex = NULL;
@@ -439,7 +457,7 @@ esp_err_t adc_deinit() {
     adc_ctx.task_is_running = 0;
     xTaskNotifyGive(adc_ctx.adc_task_handle);
     adc_continuous_stop(adc_ctx.adc1_handle);
-    ESP_ERROR_CHECK(adc_continuous_deinit(adc_ctx.adc1_handle));
+    adc_continuous_deinit(adc_ctx.adc1_handle);
 #endif
     return err;
 }
