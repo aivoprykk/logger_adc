@@ -387,7 +387,7 @@ esp_err_t adc_init(void) {
         ELOG(TAG, "[%s] Failed to create periodic timer\n", __func__);
         return ESP_FAIL;
     }
-    if(esp_timer_start_periodic(adc_ctx.adc_periodic_timer, 1000000)) {
+    if(esp_timer_start_periodic(adc_ctx.adc_periodic_timer, SEC_TO_US(1))) {
         ELOG(TAG, "[%s] Failed to start periodic timer\n", __func__);
         return ESP_FAIL;
     }
