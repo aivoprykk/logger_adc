@@ -30,7 +30,7 @@
 #include "driver/gpio.h"
 
 ESP_EVENT_DEFINE_BASE(ADC_EVENT);
-#if (C_LOG_LEVEL < 2)
+#if (C_LOG_LEVEL < 3)
 static const char * _adc_event_strings[] = { ADC_EVENT_LIST(STRINGIFY) };
 const char * adc_event_strings(int id) {
     return _adc_event_strings[id];
@@ -126,7 +126,9 @@ static const uint16_t v_graph_lipo[V_GRAPH_LIPO_LEN] = {
 };
 
 uint8_t calc_bat_perc_v(float adc) {
+#if (C_LOG_LEVEL < 3)
     ILOG(TAG, "[%s] %.04f", __func__, adc);
+#endif
     uint32_t kadc = adc * 10000, sv, step, v, v1;
     uint8_t i=0, ret = 0, perc=0;
     if(kadc<=v_graph_lipo[0]) {
@@ -158,7 +160,7 @@ uint8_t calc_bat_perc_v(float adc) {
     } else ret = 100;
     done:
 #if (C_LOG_LEVEL < 1)
-    TLOG(TAG,"[%s] voltage: %f converted: %lu mV perc: %hhu\n", __func__, adc, kadc, ret);
+    DLOG(TAG,"[%s] voltage: %f converted: %lu mV perc: %hhu\n", __func__, adc, kadc, ret);
 #endif
     return ret;
 }
@@ -178,7 +180,9 @@ uint8_t calc_bat_perc_v(float adc) {
 // }
 static const char * cali_mode = "";
 static uint8_t adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle) {
+#if (C_LOG_LEVEL < 3)
     ILOG(TAG, "[%s]", __func__);
+#endif
     esp_err_t ret = ESP_FAIL;
     uint8_t calibrated = false;
     adc_cali_handle_t handle = NULL;
@@ -202,17 +206,21 @@ static uint8_t adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_
         };
         ret = adc_cali_create_scheme_line_fitting(&cali_config, &handle);
 #endif
+#if (C_LOG_LEVEL < 2)
         DLOG(TAG,"[%s] calibration scheme version is %s\n", __func__, cali_mode);
+#endif
         if (ret == ESP_OK) calibrated = true;
     }
     *out_handle = handle;
-#if (C_LOG_LEVEL < 1)
     if (ret == ESP_OK) {
+#if (C_LOG_LEVEL < 1)
         DLOG(TAG,"[%s] Calibration Success\n", __func__);
-    } else 
 #endif
+    } else 
     if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated) {
+#if (C_LOG_LEVEL < 3)
         WLOG(TAG, "[%s] eFuse not burnt, skip software calibration", __func__);
+#endif
     } else {
         ELOG(TAG, "[%s] Invalid arg or no memory", __func__);
     }
@@ -220,8 +228,10 @@ static uint8_t adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_
 }
 
 static void adc_calibration_deinit(adc_cali_handle_t handle) {
+#if (C_LOG_LEVEL < 2)
     ILOG(TAG, "[%s]", __func__);
     DLOG(TAG, "[%s] deregister %s calibration scheme\n", __func__, cali_mode);
+#endif
 #if defined(ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED)
     if(adc_cali_delete_scheme_curve_fitting(handle)) {
         ELOG(TAG, "[%s] Failed to delete curve fitting scheme\n", __func__);
@@ -287,7 +297,9 @@ static uint8_t result_avg_efficient() {
 }
 #endif
 static void adc_update(void*arg) {
+#if (C_LOG_LEVEL < 3)
     ILOG(TAG, "[%s]", __func__);
+#endif
     uint32_t reading = VOLTAGE_CONV(adc_read_count(5, 0));
     if(xSemaphoreTake(adc_ctx.xMutex, portMAX_DELAY)) {
         adc_ctx.result[++adc_ctx.result_index % RESULT_SIZE] = reading;
@@ -330,7 +342,9 @@ static bool IRAM_ATTR s_conv_done_cb(adc_continuous_handle_t handle, const adc_c
 }
 
 void adc_task(void * arg) {
+#if (C_LOG_LEVEL < 3)
     ILOG(TAG, "[%s]", __func__);
+#endif
     esp_err_t ret;
     uint8_t count = 0;
     while (adc_ctx.task_is_running) {
@@ -357,7 +371,9 @@ void adc_task(void * arg) {
 #endif
 
 esp_err_t adc_init(void) {
+#if (C_LOG_LEVEL < 3)
     ILOG(TAG, "[%s]", __func__);
+#endif
     esp_err_t ret = 0;
     adc_ctx.do_calibration = adc_calibration_init(_ADC_UNIT_0, _ADC_CHANNEL_0, _ADC_ATTEN, &adc_ctx.adc1_cali_handle);
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
@@ -440,7 +456,9 @@ esp_err_t adc_init(void) {
 }
 
 esp_err_t adc_deinit() {
+#if (C_LOG_LEVEL < 3)
     ILOG(TAG, "[%s]", __func__);
+#endif
     esp_err_t err = 0;
     if (adc_ctx.do_calibration) {
         adc_calibration_deinit(adc_ctx.adc1_cali_handle);

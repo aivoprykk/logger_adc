@@ -88,7 +88,7 @@ menu "Logger ADC Module Options"
     config ADC_BITWIDTH
         int "ADC bit width (1-13 bits, 0 for default)"
         range 0 13
-        default 0
+        default 12
         help
             The ADC bit width can be set to 0 (default) or 9-13(bits). 
             The higher the bit width is, the higher the resolution of the ADC will be.
