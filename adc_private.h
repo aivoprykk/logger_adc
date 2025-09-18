@@ -4,24 +4,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
 #include <stdint.h>
+#include <stdbool.h>
+#include "adc_config.h"
 
-#define JOIN(x, y) JOIN_AGAIN(x, y)
-#define JOIN_AGAIN(x, y) x ## y
-
-#include "sdkconfig.h"
-
-#define VOLTAGE_MAX 4195
-#define VOLTAGE_MIN 3200
-#define DEFAULT_VREF 1114
-#define HIGH_RESISTOR 100000L
-#define LOW_RESISTOR 100000L
-
-#define VOLTAGE_PERC_COEF(a) (1 - ((VOLTAGE_MAX - (a)) / (VOLTAGE_MAX - VOLTAGE_MIN)))
-#define VOLTAGE_PERC(a) (100 * VOLTAGE_PERC_COEF(a))
-#define VOLTAGE_CONV(a) ((HIGH_RESISTOR + LOW_RESISTOR) / LOW_RESISTOR * ((a) / 100) * 1000)
-#define VOLTAGE_CONV_12(a) ((a) * 3300 / 4095)
-#define VOLTAGE_U32_TO_V(a) ((a) / 1000000)
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
 
 #define NO_OF_SAMPLES 64
@@ -44,64 +31,62 @@ extern "C" {
 
 #endif
 
-/// ADC_UNIT definition
-#if defined(CONFIG_ADC_UNIT) && (CONFIG_ADC_UNIT == 1 || CONFIG_ADC_UNIT == 2)
-#define _ADC_UNIT_0 JOIN(ADC_UNIT_, CONFIG_ADC_UNIT)
-#else
-#define _ADC_UNIT_0 ADC_UNIT_1
-#endif
-/// ADC_ATTEN definition
-#if defined(CONFIG_ADC_ATTEN)
-#if (CONIG_ADC_ATTEN > 0 && CONIG_ADC_ATTEN <= 2) || CONFIG_ADC_ATTEN == 25
-#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 2_5)
-#elif CONFIG_ADC_ATTEN <= 6
-#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 6)
-#elif CONFIG_ADC_ATTEN <= 12
-#define _ADC_ATTEN JOIN(ADC_ATTEN_DB_, 12)
-#else
-#define _ADC_ATTEN ADC_ATTEN_DB_0
-#endif
-#else
-#if ESP_IDF_VERSION_MAJOR < 5 || (ESP_IDF_VERSION_MAJOR == 5 && ESP_IDF_VERSION_MINOR <= 1 && ESP_IDF_VERSION_PATCH < 3)
-#define _ADC_ATTEN ADC_ATTEN_DB_11
-#else
-#define _ADC_ATTEN ADC_ATTEN_DB_12
-#endif
-#endif
-/// ADC_CHANNEL definition
-#if defined(CONFIG_ADC_CHANNEL)
-#define _ADC_CHANNEL_0 JOIN(ADC_CHANNEL_, CONFIG_ADC_CHANNEL)
-#else
-#if CONFIG_IDF_TARGET_ESP32
-#define _ADC_CHANNEL_0 ADC_CHANNEL_7
-#if E_USE_ADC1_2
-#define _ADC_CHANNEL_1 ADC_CHANNEL_5
-#endif
-#else
-#define _ADC_CHANNEL_0 ADC_CHANNEL_3
-#if E_USE_ADC1_2
-#define _ADC_CHANNEL_1 ADC_CHANNEL_0
-#endif
-#endif
-#endif
-/// ADC_BITWIDTH definition
-#if defined(CONFIG_ADC_BITWIDTH)
-#if CONFIG_ADC_BITWIDTH == 0 || CONFIG_ADC_BITWIDTH < 9 || CONFIG_ADC_BITWIDTH > 12
-#define _ADC_BITWIDTH ADC_BITWIDTH_DEFAULT
-#else
-// #define _ADC_BITWIDTH JOIN(ADC_WIDTH_BIT_, CONFIG_ADC_BITWIDTH)
-#define _ADC_BITWIDTH JOIN(ADC_BITWIDTH_, CONFIG_ADC_BITWIDTH)
-#endif
-#else
-#define _ADC_BITWIDTH ADC_BITWIDTH_DEFAULT
-#endif
-
 #if (defined(CONFIG_LOGGER_USE_GLOBAL_LOG_LEVEL) && CONFIG_LOGGER_GLOBAL_LOG_LEVEL < CONFIG_LOGGER_ADC_LOG_LEVEL)
 #define C_LOG_LEVEL CONFIG_LOGGER_GLOBAL_LOG_LEVEL
 #else
 #define C_LOG_LEVEL CONFIG_LOGGER_ADC_LOG_LEVEL
 #endif
-#include "common_log.h"
+
+/* ULP configuration constants */
+#define ULP_BATTERY_LOW_THRESHOLD 3400   // mV
+#define ULP_BATTERY_HIGH_THRESHOLD 4100  // mV
+#define ULP_BATTERY_CRITICAL_THRESHOLD 3200 // mV
+#define ULP_READ_PERIOD_MS 500          // 500 ms
+
+/* ULP variable addresses in RTC slow memory */
+#define ULP_ADC_READING_ADDR    0
+#define ULP_BATTERY_STATE_ADDR  1
+#define ULP_WAKE_FLAG_ADDR      2
+
+/* Voltage filtering and history constants */
+#define VOLTAGE_HISTORY_SIZE 10  // Increased for better averaging
+#define VOLTAGE_FILTER_ALPHA 0.3f  // Exponential moving average factor (0.1 = heavy smoothing, 0.9 = responsive)
+
+/* Fallback voltage constants */
+#define FALLBACK_VOLTAGE_LILYGO 3.7f  // Conservative estimate for LilyGO boards
+#define FALLBACK_VOLTAGE_GENERIC 3.8f // Generic estimate for other boards
+
+/* Common voltage thresholds */
+#define CHARGING_VOLTAGE_THRESHOLD 4.3f  // Voltage above this indicates charging
+#define CHARGING_RANGE_MIN 4.0f          // Minimum voltage for charging range
+#define USB_VOLTAGE_MAX 5.5f             // Maximum expected USB charging voltage  
+#define BATTERY_VOLTAGE_MAX_T5 4.5f      // Maximum expected voltage for T5
+#define BATTERY_VOLTAGE_MIN 2.0f         // Minimum realistic operating voltage
+
+/**
+ * Common voltage validation function for both ULP and regular ADC
+ * Validates voltage readings against board-specific thresholds
+ * @param voltage_mv Voltage in millivolts
+ * @param source_name Source description for logging ("ULP" or "ADC")
+ * @return true if voltage is valid, false if likely pin conflict or unrealistic
+ */
+bool validate_voltage_reading(uint32_t voltage_mv, const char* source_name);
+
+/**
+ * Common calibration function for both ULP and regular ADC readings
+ * Applies hardware calibration if available, falls back to voltage conversion
+ * @param raw_adc Raw ADC reading value
+ * @return Calibrated voltage in millivolts, or 0 on error
+ */
+uint32_t calibrate_adc_raw(uint32_t raw_adc);
+
+/**
+ * Validate and clamp voltage readings with board-specific logic
+ * @param voltage Voltage in volts
+ * @param is_display_s3 True for T-Display S3 boards, false for T5/other boards
+ * @return Validated voltage, clamped to fallback value if invalid
+ */
+float validate_and_clamp_voltage(float voltage, bool is_display_s3);
 
 #ifdef __cplusplus
 }
