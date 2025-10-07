@@ -1,0 +1,30 @@
+dependencies:
+  idf:
+    source:
+      type: idf
+    version: 5.4.2
+  logger_adc:
+    dependencies:
+    - name: idf
+      version: '>=5.0'
+    source:
+      path: 
+        /Users/aivo/Downloads/Arendus/Majasa/esp-gps-logger/espidf-gps-logger/components/logger_adc
+      type: local
+    version: 0.1.0
+  logger_common:
+    dependencies:
+    - name: idf
+      version: '>=5.0'
+    source:
+      path: 
+        /Users/aivo/Downloads/Arendus/Majasa/esp-gps-logger/espidf-gps-logger/components/logger_common
+      type: local
+    version: 0.1.0
+direct_dependencies:
+- idf
+- logger_adc
+- logger_common
+manifest_hash: 426d681d5b2ff2ec40a048263e26012de6b11a4c6b166890f9a4b983afba6201
+target: esp32
+version: 2.0.0

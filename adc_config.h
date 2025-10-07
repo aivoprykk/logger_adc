@@ -10,21 +10,30 @@
 #define JOIN(x, y) JOIN_AGAIN(x, y)
 #define JOIN_AGAIN(x, y) x ## y
 
-/* Set low and high thresholds, approx. 1.35V - 1.75V*/
-#define ADC_LOW_TRESHOLD    1500
-#define ADC_HIGH_TRESHOLD   2000
+#define RESULT_SLOTS 8
 
-#define VOLTAGE_MAX 4200
-#define VOLTAGE_MIN 3200
-#define DEFAULT_VREF 1114
-#define HIGH_RESISTOR 100000L
-#define LOW_RESISTOR 100000L
+/* Set low and high thresholds, approx. 3.27V - 4.1V*/
+// high is set to 3000 to avoid false triggering when fully charged, 4.2v is around 2360
+// low is set to 1770 to wake up when battery below 3.20v
+// TODO: 1800 is around 3.4v - can be triggered also to inform low battery
+#define ADC_LOW_TRESHOLD    1770
+#define ADC_HIGH_TRESHOLD   3000
 
-#define VOLTAGE_PERC_COEF(a) (1 - ((VOLTAGE_MAX - (a)) / (VOLTAGE_MAX - VOLTAGE_MIN)))
-#define VOLTAGE_PERC(a) (100 * VOLTAGE_PERC_COEF(a))
-#define VOLTAGE_CONV(a) ((HIGH_RESISTOR + LOW_RESISTOR) / LOW_RESISTOR * ((a) / 100) * 1000)
-#define VOLTAGE_CONV_12(a) ((a) * 3300 / 4095)
-#define VOLTAGE_U32_TO_V(a) ((a) / 1000000)
+/* Rapid change threshold - wake up if voltage changes by more than this amount
+ * between consecutive measurements (in ADC units, ~100 = ~0.08V change) */
+#define ADC_RAPID_CHANGE_TRESHOLD   120
+
+#define VOLTAGE_MAX 4200UL
+#define VOLTAGE_MIN 3200UL
+#define DEFAULT_VREF 1114UL
+#define HIGH_RESISTOR 100000UL
+#define LOW_RESISTOR 100000UL
+
+#define VOLTAGE_PERC_COEF(a) (float)(1.0f - (float)((VOLTAGE_MAX - (uint32_t)(a)) / (VOLTAGE_MAX - VOLTAGE_MIN)))
+#define VOLTAGE_PERC(a) (100UL * VOLTAGE_PERC_COEF(a))
+#define VOLTAGE_CONV(a) (float)((HIGH_RESISTOR + LOW_RESISTOR) / LOW_RESISTOR * ((uint32_t)(a) / 100UL))
+#define VOLTAGE_CONV_12(a) (float)((a) * 3300UL / 4095UL)
+#define VOLTAGE_U32_TO_V(a) ((float)(a) / 1000.0f)
 
 /********************************************************************
  * ULP ADC Configuration

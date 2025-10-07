@@ -19,6 +19,7 @@ ESP_EVENT_DECLARE_BASE(ADC_EVENT);        // declaration of the ADC_EVENT family
     l(ADC_EVENT_BATTERY_HIGH) \
     l(ADC_EVENT_CHARGE_STARTED) \
     l(ADC_EVENT_CHARGE_STOPPED) \
+    l(ADC_EVENT_CHARGE_STABILIZED)
 
 // declaration of the specific events under the UBX_EVENT family
 enum {                                       

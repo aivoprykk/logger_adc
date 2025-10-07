@@ -1,0 +1,6 @@
+dependencies:
+  idf: ">=5.0"
+  logger_adc:
+    path: "../../../../logger_adc"
+  logger_common:
+    path: "../../../../logger_common"
