@@ -10,7 +10,9 @@ extern "C" {
 #include "freertos/task.h"
 #include "driver/gpio.h"
 
-#include "adc_config.h"
+#include "sdkconfig.h"
+#include "ulp_adc_config.h"
+
 #include "adc.h"
 #include "adc_events.h"
 
@@ -108,6 +110,8 @@ float validate_and_clamp_voltage(float voltage, bool is_display_s3);
  * Handles posting ESP events for battery state changes
  */
 static void post_battery_state_event(adc_battery_state_t state, const char* source);
+
+bool adc_ulp_same_adc_wake_reason(void);
 
 #ifdef __cplusplus
 }

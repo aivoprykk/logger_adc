@@ -17,6 +17,10 @@
 #include "esp_adc/adc_continuous.h"
 #endif
 
+#if (C_LOG_LEVEL < 3)
+const char * adc_battery_states_str[] = { ADC_BAT_STATES(STRINGIFY) };
+const char * adc_ulp_wake_sources_str[] = { ADC_ULP_WAKE_SOURCES(STRINGIFY) };
+#endif
 
 /* Regular ADC battery state tracking (when ULP is disabled) */
 static uint32_t last_adc_reading_mv = 0;

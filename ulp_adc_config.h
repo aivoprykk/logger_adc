@@ -10,7 +10,77 @@
 #define JOIN(x, y) JOIN_AGAIN(x, y)
 #define JOIN_AGAIN(x, y) x ## y
 
-#define RESULT_SLOTS 8
+#define ULP_ADC_HISTORY_SIZE 8 // Must be power of 2: 2, 4, or 8
+
+#if (ULP_ADC_HISTORY_SIZE == 16)
+#define ULP_ADC_HISTORY_SHIFT 4
+#elif (ULP_ADC_HISTORY_SIZE == 8)
+#define ULP_ADC_HISTORY_SHIFT 3
+#elif (ULP_ADC_HISTORY_SIZE == 4)
+#define ULP_ADC_HISTORY_SHIFT 2
+#elif (ULP_ADC_HISTORY_SIZE == 2)
+#define ULP_ADC_HISTORY_SHIFT 1
+#else
+#error "ULP_ADC_HISTORY_SIZE must be 2, 4, or 8"
+#endif
+
+#define ULP_ADC_OVERSAMPLING 2  // 4 samples
+#define ULP_ADC_STABILIZATION_DELAY 5000
+
+// Single 16-bit variable layout:
+// Bit 0-1:   current_wake_source (ADC=01, BUTTON=10, BOTH=11)
+// Bit 2-4:   current_adc_reason (low=001, high=010, rapid=011)
+// Bit 5-7:   current_button_reason (long_press=001)
+// Bit 8-9:   last_wake_source (same encoding as current)
+// Bit 10-12: last_adc_reason (same encoding as current)
+// Bit 13-15: last_button_reason (same encoding as current)
+
+// Bit masks and shifts
+#define ULP_WAKE_CURRENT_SOURCE_MASK    0x0003
+#define ULP_WAKE_CURRENT_SOURCE_SHIFT   0
+#define ULP_WAKE_CURRENT_ADC_MASK       0x001C
+#define ULP_WAKE_CURRENT_ADC_SHIFT      2
+#define ULP_WAKE_CURRENT_BUTTON_MASK    0x00E0
+#define ULP_WAKE_CURRENT_BUTTON_SHIFT   5
+#define ULP_WAKE_LAST_SOURCE_MASK       0x0300
+#define ULP_WAKE_LAST_SOURCE_SHIFT      8
+#define ULP_WAKE_LAST_ADC_MASK          0x1C00
+#define ULP_WAKE_LAST_ADC_SHIFT         10
+#define ULP_WAKE_LAST_BUTTON_MASK       0xE000
+#define ULP_WAKE_LAST_BUTTON_SHIFT      13
+
+// Wake sources (3 possible values)
+#define ULP_WAKE_SOURCE_NONE    0x0
+#define ULP_WAKE_SOURCE_ADC     0x1
+#define ULP_WAKE_SOURCE_BUTTON  0x2
+#define ULP_WAKE_SOURCE_BOTH    0x3
+
+// ADC wake reasons (4 possible values)
+#define ULP_ADC_WAKE_NONE       0x0
+#define ULP_ADC_WAKE_LOW_THR    0x1
+#define ULP_ADC_WAKE_HIGH_THR   0x2
+#define ULP_ADC_WAKE_RAPID_CHG  0x3
+
+// Button wake reasons (2 possible values)
+#define ULP_BUTTON_WAKE_NONE    0x0
+#define ULP_BUTTON_WAKE_LONG_PRESS 0x1
+
+#ifdef CONFIG_ULP_BUTTON_ENABLED
+#if defined(CONFIG_HAS_BOARD_LILYGO_EPAPER_T5)
+#if CONFIG_ULP_BUTTON_GPIO == 2 || CONFIG_ULP_BUTTON_GPIO == 13 || CONFIG_ULP_BUTTON_GPIO == 14 || CONFIG_ULP_BUTTON_GPIO == 15
+#error "ULP_BUTTON_GPIO cannot be SDCARD pin GPIO2, GPIO13, GPIO14, or GPIO15"
+#endif
+#endif
+#define ULP_BUTTON_GPIO        CONFIG_ULP_BUTTON_GPIO
+#define ULP_BUTTON_LONG_PRESS_MS CONFIG_ULP_BUTTON_LONG_PRESS_MS
+#endif
+
+/* Timing Configuration */
+#define ULP_CYCLE_TIME_MS      CONFIG_ULP_CYCLE_TIME_MS
+
+/* Calculate thresholds based on timing */
+#define ULP_CYCLES_PER_SECOND  (1000 / ULP_CYCLE_TIME_MS)
+#define ULP_LONG_PRESS_CYCLES  ((ULP_BUTTON_LONG_PRESS_MS * ULP_CYCLES_PER_SECOND) / 1000)
 
 /* Set low and high thresholds, approx. 3.27V - 4.1V*/
 // high is set to 3000 to avoid false triggering when fully charged, 4.2v is around 2360

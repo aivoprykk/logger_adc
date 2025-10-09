@@ -120,6 +120,14 @@ menu "Logger ADC Module Options"
         default 5 if LOGGER_ADC_LOG_LEVEL_NONE
 
     menu "ULP Sensor Monitoring"
+        config ULP_BATTERY_MONITORING_ENABLED
+            bool "Enable ULP battery voltage monitoring"
+            default y
+            help
+                Enable ULP coprocessor battery voltage monitoring.
+                
+                Note: Ensure a voltage divider is connected to the selected ADC channel
+                to step down battery voltage within ADC input range.
         config ULP_BUTTON_ENABLED
             bool "Enable ULP button monitoring"
             default y
@@ -140,10 +148,9 @@ menu "Logger ADC Module Options"
                 to monitor the same physical button.
                 
         config ULP_BUTTON_RTC_IO
-            int "Button RTC IO number"
+            int
             depends on ULP_BUTTON_ENABLED  
             range 0 17
-            default 3 if ULP_BUTTON_GPIO = 39
             default 11 if ULP_BUTTON_GPIO = 0
             default 12 if ULP_BUTTON_GPIO = 2
             default 10 if ULP_BUTTON_GPIO = 4
@@ -161,6 +168,7 @@ menu "Logger ADC Module Options"
             default 0 if ULP_BUTTON_GPIO = 36
             default 1 if ULP_BUTTON_GPIO = 37
             default 2 if ULP_BUTTON_GPIO = 38
+            default 3 if ULP_BUTTON_GPIO = 39
             default 3
             help
                 RTC IO number corresponding to the button GPIO.
