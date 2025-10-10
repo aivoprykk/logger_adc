@@ -20,28 +20,37 @@ RTC_DATA_ATTR bool ulp_initialized = false;
 extern const uint8_t ulp_battery_bin_start[] asm("_binary_ulp_battery_bin_start");
 extern const uint8_t ulp_battery_bin_end[]   asm("_binary_ulp_battery_bin_end");
 
+/* ULP memory is 32-bit word addressed - all variables are uint32_t */
+/* For small values, only lower bits are used */
 extern uint32_t ulp_wake_data;
 extern uint32_t ulp_cycle_count;
-extern uint32_t ulp_low_thr;
-extern uint32_t ulp_last_result;
+extern uint32_t ulp_low_thr;         /* Only lower 12 bits used */
+extern uint32_t ulp_last_result;     /* Only lower 12 bits used */
 extern uint32_t ulp_entry;
 
 #ifdef CONFIG_ULP_BUTTON_ENABLED
 extern uint32_t ulp_button_press_counter;
 extern uint32_t ulp_button_last_result;
+/* ULP st instruction always writes 32-bit, so .word packing doesn't work */
+/* Must use .long and access as uint32_t */
+#define ulp_button_press_counter_get() (ulp_button_press_counter & 0xFFFF)
+#define ulp_button_press_counter_set(val) (ulp_button_press_counter = (val) & 0xFFFF)
+#define ulp_button_last_result_get() (ulp_button_last_result & 0x1)
+#define ulp_button_last_result_set(val) (ulp_button_last_result = (val) & 0x1)
 #endif
 #ifdef CONFIG_ULP_BATTERY_MONITORING_ENABLED
-extern uint32_t ulp_rapid_change_thr;
-extern uint32_t ulp_cum_change;
-extern uint32_t ulp_prev_result[ULP_ADC_HISTORY_SIZE];
-extern uint32_t ulp_prev_result_idx;
-extern uint32_t ulp_sample_count;
+extern uint32_t ulp_rapid_change_thr;      /* Only lower 16 bits used */
+extern uint32_t ulp_cum_change;            /* Only lower 16 bits used */
+extern uint32_t ulp_prev_result[ULP_ADC_HISTORY_SIZE];  /* Each: only lower 12 bits used */
+extern uint32_t ulp_prev_result_idx;       /* Only lower 16 bits used */
+extern uint32_t ulp_sample_count;          /* Only lower 16 bits used */
+extern uint32_t ulp_running_sum;           /* Full 32 bits used */
 #endif
-extern uint32_t ulp_debug_counter;
+extern uint32_t ulp_debug_counter;  /* Only lower 16 bits used */
 
 /* 
  * Safe ULP variable access macros
- * The ULP compiler generates uint32_t symbols and our assembly now uses 32-bit values
+ * The ULP compiler generates uint32_t symbols and our assembly uses 32-bit words
  * These macros handle the type conversion safely
  */
 #define ULP_GET_U32(var) (var & UINT16_MAX)
@@ -191,8 +200,7 @@ esp_err_t init_ulp_program(void) {
     ULP_SET_U32(ulp_last_result, 0);
     ULP_SET_U32(ulp_low_thr, ADC_LOW_TRESHOLD);
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
-    ULP_SET_U32(ulp_button_press_counter, 0);
-    ULP_SET_U32(ulp_button_last_result, 0);
+    ulp_button_press_counter = 0;  /* Clears both counter (lower 16) and last_result (upper 16) */
 #endif
 #if defined(CONFIG_ULP_BATTERY_MONITORING_ENABLED)
     ULP_SET_U32(ulp_rapid_change_thr, ADC_RAPID_CHANGE_TRESHOLD);
@@ -211,7 +219,6 @@ esp_err_t init_ulp_program(void) {
     ULP_SET_U32(ulp_debug_counter, 0);
     printf("Raw ULP variable check:\n");
     printf("  low_thr addr=%p, value=0x%08lX (%lu)\n", &ulp_low_thr, ULP_GET_U32(ulp_low_thr), ULP_GET_U32(ulp_low_thr));
-    // printf("  high_thr addr=%p, value=0x%08lX (%lu)\n", &ulp_high_thr, ULP_GET_U32(ulp_high_thr), ULP_GET_U32(ulp_high_thr));
     printf("  last_result addr=%p, value=0x%08lX (%lu)\n", &ulp_last_result, ULP_GET_U32(ulp_last_result), ULP_GET_U32(ulp_last_result));
     ulp_initialized = true;
 #if (C_LOG_LEVEL < 3)
@@ -306,10 +313,12 @@ void debug_ulp_status(void) {
     }
     printf("=== ULP Diagnostic Status ===\n");
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
-    printf("ULP Button Press Counter: %lu\n", ULP_GET_U32(ulp_button_press_counter));
-    printf("ULP Button Press Counter: raw 0x%08lX\n", ULP_GET_U32(ulp_button_press_counter));
-    printf("ULP Button Last Result: %lu\n", ULP_GET_U32(ulp_button_last_result));
-    printf("ULP Button Last Result raw 0x%08lX\n", ULP_GET_U32(ulp_button_last_result));
+    printf("ULP Button Press Counter addr=%p, value=%u (0x%04X)\n", 
+           &ulp_button_press_counter, ulp_button_press_counter_get(), ulp_button_press_counter_get());
+    printf("ULP Button Last Result addr=%p, value=%u (0x%04X)\n", 
+           &ulp_button_last_result, ulp_button_last_result_get(), ulp_button_last_result_get());
+    printf("ULP Button vars as uint32: counter=0x%08lX, last=0x%08lX\n",
+           ulp_button_press_counter, ulp_button_last_result);
 #endif
     printf("ULP Last Result: %lu\n", ULP_GET_U32(ulp_last_result));
     printf("ULP Low Threshold: %lu\n", ULP_GET_U32(ulp_low_thr));
@@ -319,20 +328,20 @@ void debug_ulp_status(void) {
     printf("ULP Sample Count: %lu\n", ULP_GET_U32(ulp_sample_count));
     printf("ULP Cumulative Change: %lu\n", ULP_GET_U32(ulp_cum_change));
     printf("ULP Prev Result Index: %lu\n", ULP_GET_U32(ulp_prev_result_idx));
+    printf("ULP Running Sum: %lu\n", ULP_GET_U32(ulp_running_sum));
     printf("ULP Prev Result (raw): [");
     for (int i = 0; i < ULP_ADC_HISTORY_SIZE; i++) {
-        printf("0x%08lX", ulp_prev_result[i]);
+        printf("0x%04lX", ULP_GET_ARR_U32(ulp_prev_result, i));
         if (i < (ULP_ADC_HISTORY_SIZE - 1)) printf(", ");
     }
     printf("]\n");
     printf("ULP Prev Result: [");
     for (int i = 0; i < ULP_ADC_HISTORY_SIZE; i++) {
-        printf("%lu", ulp_prev_result[i] & 0xFFFF);
+        printf("%lu", ULP_GET_ARR_U32(ulp_prev_result, i));
         if (i < (ULP_ADC_HISTORY_SIZE - 1)) printf(", ");
     }
     printf("]\n");
 #endif
-    printf("ULP Debug Counter: %lu\n", ULP_GET_U32(ulp_debug_counter));
     // Decode wake_data bits
     uint32_t wake_data = ULP_GET_U32(ulp_wake_data);
     uint8_t curr_source = (wake_data >> ULP_WAKE_CURRENT_SOURCE_SHIFT) & 0x3;
@@ -345,6 +354,10 @@ void debug_ulp_status(void) {
     printf("ULP Wake Data: 0x%08lX\n", wake_data);
     printf("  Current: Source=%s, State: adc=%s, button=%hhu\n", adc_ulp_wake_sources_str[curr_source], adc_battery_states_str[curr_adc], curr_button);
     printf("  Last:    Source=%s, State: adc=%s, button=%hhu\n", adc_ulp_wake_sources_str[last_source], adc_battery_states_str[last_adc], last_button);
+#if defined(CONFIG_ULP_BUTTON_ENABLED)
+    printf("  Debug:   Button press in progress: counter=%lu (0=no press, >0=pressing, threshold=%d)\n", 
+           ulp_button_press_counter_get(), ULP_LONG_PRESS_CYCLES);
+#endif
     printf("=== End ULP Diagnostic ===\n");
 #endif
 }
@@ -356,15 +369,15 @@ void debug_ulp_status(void) {
  */
 adc_battery_state_t get_battery_state_from_ulp(void) {
     FUNC_ENTRY(TAG);
-    // Get ULP variables (raw ADC values, not voltage)
-    const uint32_t current_result = ULP_GET_U32(ulp_last_result);   // Current ADC reading
-    const uint16_t low_thr = ADC_LOW_TRESHOLD;             // Low threshold from config
-    // const uint16_t high_thr = ADC_HIGH_TRESHOLD;           // High threshold from config
-    const uint16_t rapid_thr = ADC_RAPID_CHANGE_TRESHOLD;  // Rapid change threshold
+    // Get ULP variables (raw ADC values, not voltage) - 32-bit word access with masking
+    const uint32_t current_result = ULP_GET_U32(ulp_last_result) & 0xFFF;   // 12-bit ADC result (keep mask)
+    const uint32_t low_thr = ADC_LOW_TRESHOLD;         // Low threshold from config
+    // const uint32_t high_thr = ADC_HIGH_TRESHOLD;    // High threshold from config
+    const uint32_t rapid_thr = ADC_RAPID_CHANGE_TRESHOLD;  // Rapid change threshold
 #if defined(CONFIG_ULP_BATTERY_MONITORING_ENABLED)
-    uint32_t prev_result_avg = 0; // Previous reading
+    uint32_t prev_result_avg = 0; // Previous reading average
     for (uint8_t i = 0; i < ULP_ADC_HISTORY_SIZE; i++) {
-        prev_result_avg += ULP_GET_ARR_U32(ulp_prev_result, i);
+        prev_result_avg += ULP_GET_ARR_U32(ulp_prev_result, i) & 0xFFF;  // 12-bit ADC results (keep mask)
     }
     prev_result_avg /= ULP_ADC_HISTORY_SIZE; // Average previous readings
     const int32_t change = (int32_t)current_result - (int32_t)prev_result_avg;
@@ -373,7 +386,7 @@ adc_battery_state_t get_battery_state_from_ulp(void) {
 #if defined(CONFIG_ULP_BATTERY_MONITORING_ENABLED)
     "change=%ld, "
 #endif
-    "low_thr=%hu, rapid_thr=%hu",
+    "low_thr=%lu, rapid_thr=%lu",
          current_result,
 #if defined(CONFIG_ULP_BATTERY_MONITORING_ENABLED)
          change, 

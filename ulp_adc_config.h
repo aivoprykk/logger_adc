@@ -10,7 +10,7 @@
 #define JOIN(x, y) JOIN_AGAIN(x, y)
 #define JOIN_AGAIN(x, y) x ## y
 
-#define ULP_ADC_HISTORY_SIZE 8 // Must be power of 2: 2, 4, or 8
+#define ULP_ADC_HISTORY_SIZE 4 // Must be power of 2: 2, 4, or 8 (reduced to 4 to save ULP RAM)
 
 #if (ULP_ADC_HISTORY_SIZE == 16)
 #define ULP_ADC_HISTORY_SHIFT 4
@@ -48,6 +48,9 @@
 #define ULP_WAKE_LAST_ADC_SHIFT         10
 #define ULP_WAKE_LAST_BUTTON_MASK       0xE000
 #define ULP_WAKE_LAST_BUTTON_SHIFT      13
+// Debug: Button press counter (2 bits, values 0-3)
+#define ULP_WAKE_DEBUG_BTN_COUNT_MASK   0x30000
+#define ULP_WAKE_DEBUG_BTN_COUNT_SHIFT  16
 
 // Wake sources (3 possible values)
 #define ULP_WAKE_SOURCE_NONE    0x0

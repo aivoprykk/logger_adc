@@ -255,6 +255,7 @@ static uint32_t get_progressive_average(void) {
 }
 
 adc_battery_state_t get_adc_state(void) {
+    FUNC_ENTRY_ARGS(TAG," *** %s ***", adc_battery_states_str[last_adc_battery_state]);
     return last_adc_battery_state;
 }
 
@@ -689,26 +690,27 @@ static adc_analysis_t analyze_adc_readings(uint32_t voltage_mv, uint8_t availabl
  * Called from adc_update() to process new voltage readings
  */
 void handle_adc_battery_state(void) {
-    FUNC_ENTRY(TAG);
     adc_battery_state_t new_state = get_battery_state();
     uint32_t voltage_mv = get_recent_reading(0); // Get voltage from buffer
+    FUNC_ENTRY_ARGS(TAG, " new_state: %s, last_state: %s", 
+                    adc_battery_states_str[new_state], adc_battery_states_str[last_adc_battery_state]);
 
     // Only post events on state changes
     if (new_state != last_adc_battery_state) {
-        const char* state_names[] = {"NORMAL", "LOW", "HIGH", "CHARGING_STARTED", "CHARGING_STOPPED", "CRITICAL_LOW"};
+        // const char* state_names[] = {"NORMAL", "LOW", "HIGH", "CHARGING_STARTED", "CHARGING_STOPPED", "CRITICAL_LOW"};
         
         // Check if we should suppress state changes during transitions
         if (s_adc_events_suppressed) {
             // Always allow critical low battery state changes - safety first
             if (new_state != ADC_BATTERY_CRITICAL_LOW) {
                 DLOG(TAG, "State change suppressed during transition: %s -> %s (%lu mV)", 
-                     state_names[last_adc_battery_state], state_names[new_state], voltage_mv);
+                     adc_battery_states_str[last_adc_battery_state], adc_battery_states_str[new_state], voltage_mv);
                 return;  // Suppress the state change entirely
             }
         }
         
         DLOG(TAG, "State change: %s -> %s (%lu mV)", 
-             state_names[last_adc_battery_state], state_names[new_state], voltage_mv);
+             adc_battery_states_str[last_adc_battery_state], adc_battery_states_str[new_state], voltage_mv);
         
         // Priority-based logging
         if (new_state == ADC_BATTERY_CHARGING_STARTED) {

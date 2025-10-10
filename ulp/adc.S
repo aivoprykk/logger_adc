@@ -26,63 +26,58 @@
 
 /* Global variables */
 .bss
+/* ULP memory is 32-bit word addressed - must use .long for reliable access */
+/* For values that fit in 16 bits, we use only lower 16 bits of the 32-bit word */
 .global wake_data
 wake_data:
-    .long 0  /* Single packed variable */
+    .long 0  /* 32-bit: packed wake source/reason data */
 
 #if CONFIG_ULP_BUTTON_ENABLED
 .global button_press_counter
 button_press_counter:
-    .long 0
+    .long 0  /* ULP st instruction writes 32-bit, must use .long */
 .global button_last_result
 button_last_result:
-    .long 0  // For debugging: store raw button state
+    .long 0  /* ULP st instruction writes 32-bit, must use .long */
 #endif
 
-/* Battery sensing variables - EXACTLY from your tested code */
 .global low_thr
 low_thr:
-    .long 0
+    .long 0  /* 32-bit word, only lower 12 bits used (ADC threshold max 4095) */
 .global last_result
 last_result:
-    .long 0
+    .long 0  /* 32-bit word, only lower 12 bits used (ADC reading max 4095) */
+
 #if CONFIG_ULP_BATTERY_MONITORING_ENABLED
 .global rapid_change_thr
 rapid_change_thr:
-    .long 0
+    .long 0  /* 32-bit word, only lower 16 bits used (~120) */
 .global cum_change
 cum_change:
-    .long 0
+    .long 0  /* 32-bit word, only lower 16 bits used */
 .global prev_result
 prev_result: 
-    .space (ADC_HISTORY_SIZE * 4)  // 8 elements * 4 bytes
+    .space (ADC_HISTORY_SIZE * 4)  /* 8 elements * 4 bytes, only lower 12 bits used */
 .global prev_result_idx
 prev_result_idx:
-    .long 0
+    .long 0  /* 32-bit word, only lower 16 bits used (index 0-7) */
 .global sample_count
 sample_count:
-    .long 0
+    .long 0  /* 32-bit word, only lower 16 bits used (count 0-8) */
 .global running_sum
 running_sum:
-    .long 0
+    .long 0  /* 32-bit: full word used (sum can be 8*4095=32760) */
 #endif
-.global debug_counter
-debug_counter:
-    .long 0
+
 .global cycle_count
 cycle_count:
-    .long 0
+    .long 0  /* 32-bit: full word used (can grow large) */
 
 .text
 .global entry
 entry:
-    /* Initialize - don't clear wake_data entirely, just current wake source */
-    /* This preserves last wake reasons across ULP restarts */
-    move r1, wake_data
-    ld r2, r1, 0
-    /* Clear only current wake source, preserve last wake reasons */
-    and r2, r2, ~ULP_WAKE_CURRENT_SOURCE_MASK
-    st r2, r1, 0
+    /* DON'T clear wake_data here - main CPU clears it via adc_ulp_clear_wake_sources() */
+    /* This preserves wake_data so main CPU can read it after ULP wake */
 
     /* DON'T reset cycle_count here - let it continue across restarts */
     /* This prevents timing issues when ULP is restarted frequently */
@@ -115,12 +110,6 @@ first_run_init:
     move r1, cycle_count
     move r2, 0
     st r2, r1, 0
-    
-#if ULP_DEBUG_WAKEUPS_ENABLED
-    move r1, debug_counter
-    move r2, 0
-    st r2, r1, 0
-#endif
 
 #if CONFIG_ULP_BUTTON_ENABLED
     move r1, button_press_counter
@@ -128,45 +117,60 @@ first_run_init:
     st r2, r1, 0
 #endif
 
+    /* Clear wake_data including debug button counter (bits 16-17) */
+    move r1, wake_data
+    move r2, 0
+    st r2, r1, 0
+
 main_loop:
 #if CONFIG_ULP_BUTTON_ENABLED
 button_check:
-    /* Read button state (0 = pressed, 1 = released) */
+    /* Read button state (0 = pressed with pull-up, 1 = released) */
     READ_RTC_REG(RTC_GPIO_IN_REG, RTC_GPIO_IN_NEXT_S + BUTTON_RTC_IO, 1)
     
     /* Store raw button state for debugging */
     move r2, button_last_result    /* r2 = address of button_last_result */
     st r0, r2, 0                   /* Store GPIO state (r0 from READ_RTC_REG) */
 
-    /* Check if button is pressed (GPIO = 0) */
-    jump button_not_pressed, eq   /* If r0 == 0, button is pressed */
+    /* Check if button is pressed (GPIO = 0 with pull-up) */
+    jump button_pressed, eq       /* If r0 == 0, button is pressed */
 
-    /* Button is released - reset counter if it was non-zero */
+    /* === BUTTON RELEASED === */
+    /* Check if we had a button press in progress (counter > 0) */
     move r1, button_press_counter
     ld r2, r1, 0
     move r3, 0
     sub r3, r2, r3  /* Check if counter > 0 */
-    jump button_counter_nonzero, ov /* If counter > 0 */
-    jump check_adc_timing /* Counter is zero, no reset needed */
+    jump button_released_after_press, ov /* If counter > 0, check threshold */
+    
+    /* Counter is zero - button was never pressed, continue to ADC */
+    jump check_adc_timing
 
-button_counter_nonzero:
+button_released_after_press:
+    
+    move r3, LONG_PRESS_THRESHOLD
+    sub r3, r2, r3  /* Compare counter to threshold */
+    jump button_long_press_detected, ov  /* If counter >= threshold, trigger wake */
+    
+    /* Threshold not met - reset counter and resume ADC */
+    move r1, button_press_counter
     move r2, 0
     st r2, r1, 0
     jump check_adc_timing
 
-button_not_pressed:
-    /* Button is pressed - increment counter */
+button_pressed:
+    /* === BUTTON PRESSED === */
+    /* CRITICAL: Skip ADC while button is pressed to avoid voltage noise */
+    
+    /* Increment button press counter */
     move r1, button_press_counter
     ld r2, r1, 0
     add r2, r2, 1
     st r2, r1, 0
 
-    /* Check for long press */
-    move r3, LONG_PRESS_THRESHOLD
-    sub r3, r2, r3
-    jump button_long_press_detected, eq
-    
-    jump check_adc_timing
+    /* Don't check threshold here - wait for release to avoid false triggers */
+    /* Just skip ADC and go to sleep */
+    jump sleep_cycle
 
 check_adc_timing:
 #endif
@@ -226,6 +230,14 @@ button_long_press_detected:
 /* ========================================================================== */
 
 adc_measure_and_check:
+    /* Check if we already have a wake event pending - if so, FREEZE all ADC processing */
+    move r1, wake_data
+    ld r2, r1, 0
+    and r3, r2, ULP_WAKE_CURRENT_SOURCE_MASK  /* Check bits 0-1 for wake source */
+    move r0, 0
+    sub r0, r3, r0  /* Check if r3 != 0 */
+    jump adc_frozen, ov  /* If wake source is set (non-zero), skip all ADC processing */
+
     /* === ADC MEASUREMENT === */
     /* Delay to stabilize ADC */
     move r0, ADC_STABILIZATION_DELAY
@@ -311,17 +323,21 @@ buffer_not_full:
     and r2, r2, (ADC_HISTORY_SIZE-1) /* wrap 0-7 */
     st r2, r1, 0                   /* store new index */
     
-    /* 6. Update sample_count */
+    /* 6. Update sample_count - cap at ADC_HISTORY_SIZE */
     move r1, sample_count
     ld r2, r1, 0
-    add r2, r2, 1
     move r3, ADC_HISTORY_SIZE
     sub r0, r2, r3
-    jump sample_full, ov
+    jump sample_full, eq  /* If already at max (8), don't increment */
+    
+    /* Increment sample_count */
+    add r2, r2, 1
     st r2, r1, 0
     jump check_full
+    
 sample_full:
-    move r2, ULP_ADC_HISTORY_SIZE
+    /* Already at max size, keep it there */
+    move r2, ADC_HISTORY_SIZE
     st r2, r1, 0
 
 check_full:
@@ -386,21 +402,11 @@ adc_check_thresholds:
 
     jump adc_exit
 
+adc_frozen:
+    /* ADC is frozen because wake is already set - just sleep */
+    jump sleep_cycle
+
 adc_exit:
-#if ULP_DEBUG_WAKEUPS_ENABLED
-    /* Debug counter with periodic wakeup */
-    move r1, debug_counter
-    ld r2, r1, 0
-    add r2, r2, 1
-    st r2, r1, 0
-    
-    /* Check if we should trigger periodic debug wake */
-    /* Wake after 10 ADC checks = 10 seconds (ADC checked once per second) */
-    move r3, 10  /* 10 ADC checks = 10 seconds */
-    sub r0, r2, r3
-    jump debug_periodic_wake, eq
-#endif
-    
     jump sleep_cycle
 
 debug_periodic_wake:
@@ -423,16 +429,26 @@ debug_periodic_wake:
     jump wake_main_cpu
 
 adc_low_threshold_triggered:
-    /* Check if same as last wake reason */
+    /* Check if same as last wake reason (anti-spam) */
     move r1, wake_data
     ld r2, r1, 0
-    and r3, r2, ULP_WAKE_CURRENT_ADC_MASK      /* Current ADC reason */
-    rsh r3, r3, ULP_WAKE_CURRENT_ADC_SHIFT
+    
+    /* Extract last ADC reason */
     and r1, r2, ULP_WAKE_LAST_ADC_MASK         /* Last ADC reason */
     rsh r1, r1, ULP_WAKE_LAST_ADC_SHIFT
-    sub r0, r3, r1
-    jump adc_exit, eq       /* Skip if same reason */
     
+    /* If last reason is NONE (0), always wake - this is first wake */
+    jump adc_low_set_wake, eq
+    
+    /* Extract current ADC reason */
+    and r3, r2, ULP_WAKE_CURRENT_ADC_MASK      /* Current ADC reason */
+    rsh r3, r3, ULP_WAKE_CURRENT_ADC_SHIFT
+    
+    /* Compare current with last */
+    sub r0, r3, r1
+    jump adc_exit, eq       /* Skip only if same non-zero reason */
+    
+adc_low_set_wake:
     /* Set ADC wake reason */
     move r1, wake_data
     ld r2, r1, 0
@@ -444,25 +460,42 @@ adc_low_threshold_triggered:
     and r2, r2, 0xFF00      /* Clear current bits, keep last */
     or r2, r2, r3           /* Combine old current into last */
     
-    /* Clear current ADC and source, set low threshold reason */
-    and r2, r2, 0xFFE3      /* Clear bits 0-1 and 2-4 */
-    or r2, r2, 0x0005       /* ULP_WAKE_SOURCE_ADC | (ULP_ADC_WAKE_LOW_THR << 2) */
+    /* Clear current ADC and source bits (0-4) */
+    and r2, r2, 0xFFE0      /* Clear bits 0-4 */
+    
+    /* Set source = ADC (bit 0) */
+    or r2, r2, ULP_WAKE_SOURCE_ADC  /* Set bit 0 = 1 */
+    
+    /* Set ADC reason = LOW_THR (1) in bits 2-4 */
+    move r0, ULP_ADC_WAKE_LOW_THR   /* r0 = 1 */
+    lsh r0, r0, 2                    /* r0 = 1 << 2 = 4 */
+    or r2, r2, r0                    /* Set bits 2-4 */
     
     st r2, r1, 0
     jump wake_main_cpu
 
 #if CONFIG_ULP_BATTERY_MONITORING_ENABLED
 adc_rapid_change_triggered:
-    /* Check if same as last wake reason */
+    /* Check if same as last wake reason (anti-spam) */
     move r1, wake_data
     ld r2, r1, 0
-    and r3, r2, ULP_WAKE_CURRENT_ADC_MASK      /* Current ADC reason */
-    rsh r3, r3, ULP_WAKE_CURRENT_ADC_SHIFT
+    
+    /* Extract last ADC reason */
     and r1, r2, ULP_WAKE_LAST_ADC_MASK         /* Last ADC reason */
     rsh r1, r1, ULP_WAKE_LAST_ADC_SHIFT
-    sub r0, r3, r1
-    jump adc_exit, eq       /* Skip if same reason */
     
+    /* If last reason is NONE (0), always wake - this is first wake */
+    jump adc_rapid_set_wake, eq
+    
+    /* Extract current ADC reason */
+    and r3, r2, ULP_WAKE_CURRENT_ADC_MASK      /* Current ADC reason */
+    rsh r3, r3, ULP_WAKE_CURRENT_ADC_SHIFT
+    
+    /* Compare current with last */
+    sub r0, r3, r1
+    jump adc_exit, eq       /* Skip only if same non-zero reason */
+    
+adc_rapid_set_wake:
     /* Set ADC wake reason */
     move r1, wake_data
     ld r2, r1, 0
@@ -474,9 +507,16 @@ adc_rapid_change_triggered:
     and r2, r2, 0xFF00      /* Clear current bits, keep last */
     or r2, r2, r3           /* Combine old current into last */
     
-    /* Clear current ADC and source, set rapid change reason */
-    and r2, r2, 0xFFE3      /* Clear bits 0-1 and 2-4 */
-    or r2, r2, 0x000D       /* ULP_WAKE_SOURCE_ADC | (ULP_ADC_WAKE_RAPID_CHG << 2) */
+    /* Clear current ADC and source bits (0-4) */
+    and r2, r2, 0xFFE0      /* Clear bits 0-4 */
+    
+    /* Set source = ADC (bit 0) */
+    or r2, r2, ULP_WAKE_SOURCE_ADC  /* Set bit 0 = 1 */
+    
+    /* Set ADC reason = RAPID_CHG (3) in bits 2-4 */
+    move r0, ULP_ADC_WAKE_RAPID_CHG  /* r0 = 3 */
+    lsh r0, r0, 2                     /* r0 = 3 << 2 = 12 */
+    or r2, r2, r0                     /* Set bits 2-4 */
     
     st r2, r1, 0
     jump wake_main_cpu
@@ -484,43 +524,13 @@ adc_rapid_change_triggered:
 
 /* Common wakeup handler for both ADC and button */
 wake_main_cpu:
-    /* No need to reset wake_source anymore - it's in wake_data */
-    /* No need to reset cum_change - it's recalculated each cycle */
-
-#if ULP_DEBUG_WAKEUPS_ENABLED
-    /* Reset debug counter for next wake cycle */
-    // move r3, debug_counter
-    // move r0, 0
-    // st r0, r3, 0
-#endif
-
     /* Wake up the main CPU */
-    READ_RTC_FIELD(RTC_CNTL_LOW_POWER_ST_REG, RTC_CNTL_RDY_FOR_WAKEUP)
-    and r0, r0, 1
-    jump sleep_cycle, eq /* Try again later if not ready */
     wake  /* Wake main CPU */
-
-    /* IMPORTANT: Remove these two lines completely */
-    /* WRITE_RTC_FIELD(RTC_CNTL_STATE0_REG, RTC_CNTL_ULP_CP_SLP_TIMER_EN, 0) */
-    /* halt */
-
-    jump sleep_cycle  /* Continue ULP operation */
+    /* HALT the ULP after waking - main CPU will restart us */
+    halt  /* Stop ULP execution - main CPU must restart with start_ulp_program() */
 
 sleep_cycle:
-    /* Before sleeping, check if we had any wake source */
-    move r1, wake_data
-    ld r2, r1, 0
-    and r3, r2, ULP_WAKE_CURRENT_SOURCE_MASK
-    jump no_wake_source, eq
-    
-    /* We have a wake source - proceed to sleep without clearing */
-    jump do_wait
-    
-no_wake_source:
-    /* No wake source detected this cycle - clear wake data */
-    move r2, 0
-    st r2, r1, 0
-    
-do_wait:
+    /* Never clear wake_data once set - only main CPU can clear it via entry point */
+    /* This ensures wake reason persists until main CPU processes it */
     wait CYCLE_WAIT_TICKS
     jump main_loop
