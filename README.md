@@ -38,6 +38,24 @@ Refer to the source code and comments for detailed configuration options.
 - ESP-IDF ADC driver
 - Main logger component
 
+## 📚 Developer Documentation
+
+For detailed technical documentation, architecture guides, and implementation examples, see:
+
+**[doc/development/adc/](../../doc/development/adc/)** - ADC Development Documentation
+- **[ADC_CALIBRATION_GUIDE.md](../../doc/development/adc/ADC_CALIBRATION_GUIDE.md)** - ADC calibration and voltage conversion guide
+  - Manual conversion formulas for 12-bit ADC
+  - Why calibration fails in ULP/RTC mode
+  - Voltage divider calculations and accuracy analysis
+  
+- **[ULP_ADC_REFACTOR_GUIDE.md](../../doc/development/adc/ULP_ADC_REFACTOR_GUIDE.md)** - ULP-as-primary ADC architecture guide
+  - Dual-mode implementation patterns with preprocessor flags
+  - Benefits analysis and migration checklist
+  
+- **[REFACTOR_EXAMPLE_volt_read.c](../../doc/development/adc/REFACTOR_EXAMPLE_volt_read.c)** - Working code example
+  - volt_read() dual implementation (ULP primary vs regular ADC)
+  - Helper functions and usage examples
+
 ## License
 
 This module is licensed under the MIT License.

@@ -27,6 +27,47 @@ extern "C" {
 #endif
 #include "common_log.h"
 
+/* 
+ * Safe ULP variable access macros
+ * The ULP compiler generates uint32_t symbols and our assembly uses 32-bit words
+ * These macros handle the type conversion safely
+ */
+#define ULP_GET_U32(var) (var & UINT16_MAX)
+#define ULP_SET_U32(var, val) ((var) = (val))
+#define ULP_GET_U16(var) (*(volatile uint16_t*)&(var) & UINT16_MAX)
+#define ULP_SET_U16(var, val) (*(volatile uint16_t*)&(var) = (val))
+#define ULP_GET_U8(var) (*(volatile uint8_t*)&(var) & UINT8_MAX)  
+#define ULP_SET_U8(var, val) (*(volatile uint8_t*)&(var) = (val))
+#define ULP_GET_ARR_U32(arr, i) (((volatile uint32_t*)&(arr))[i] & UINT16_MAX)
+#define ULP_SET_ARR_U32(arr, i, val) (((volatile uint32_t*)&(arr))[i] = (val))
+#define ULP_GET_ARR_U16(arr, i) (((volatile uint16_t*)&(arr))[i] & UINT16_MAX)
+#define ULP_SET_ARR_U16(arr, i, val) (((volatile uint16_t*)&(arr))[i] = (val))
+
+/* ULP memory is 32-bit word addressed - all variables are uint32_t */
+/* For small values, only lower bits are used */
+extern uint32_t ulp_curr_wake_status;  /* Packed: bits 0-1=source, 2-4=adc, 5-7=button */
+extern uint32_t ulp_last_wake_status;  /* Packed: bits 0-1=source, 2-4=adc, 5-7=button */
+extern uint32_t ulp_cycle_count;
+extern uint32_t ulp_last_result;     /* Only lower 12 bits used */
+extern uint32_t ulp_entry;
+
+#ifdef CONFIG_ULP_BUTTON_ENABLED
+extern uint32_t ulp_button_press_counter;
+extern uint32_t ulp_button_last_result;
+/* ULP st instruction always writes 32-bit, so .word packing doesn't work */
+/* Must use .long and access as uint32_t */
+#define ulp_button_press_counter_get() (ulp_button_press_counter & 0xFFFF)
+#define ulp_button_press_counter_set(val) (ulp_button_press_counter = (val) & 0xFFFF)
+#define ulp_button_last_result_get() (ulp_button_last_result & 0x1)
+#define ulp_button_last_result_set(val) (ulp_button_last_result = (val) & 0x1)
+#endif
+#ifdef CONFIG_ULP_BATTERY_MONITORING_ENABLED
+extern uint32_t ulp_cum_change;            /* Only lower 16 bits used */
+extern uint32_t ulp_history[ULP_ADC_HISTORY_SIZE];  /* Each: only lower 12 bits used */
+extern uint32_t ulp_history_idx;       /* Only lower 16 bits used */
+extern uint32_t ulp_running_sum;           /* Full 32 bits used */
+#endif
+
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
 
 #define NO_OF_SAMPLES 64
@@ -118,3 +159,4 @@ bool adc_ulp_same_adc_wake_reason(void);
 #endif
 
 #endif /* C68D7F37_A55C_4F0E_A19C_B0D2B1853F2A */
+

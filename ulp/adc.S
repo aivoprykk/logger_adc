@@ -22,15 +22,28 @@
 .set adc_oversampling_factor_log, ULP_ADC_OVERSAMPLING
 .set adc_oversampling_factor, (1 << adc_oversampling_factor_log)
 
-.set CYCLE_WAIT_TICKS, (8000 * ULP_CYCLE_TIME_MS / 1000)
+/* ULP wait uses RTC_FAST_CLK ticks (~8MHz)
+   But wait instruction is limited to 16-bit (max 65535 ticks)
+   For 125ms: need 1,000,000 ticks, so use loop: 16 × 62500 = 1,000,000 */
+.set WAIT_TICKS_PER_ITER, 62500  /* Max safe value < 65536 */
+.set WAIT_ITERATIONS, (8000 * ULP_CYCLE_TIME_MS / WAIT_TICKS_PER_ITER)
+
+/* Compile-time constants - no RAM needed! */
+.set ADC_LOW_THR_VALUE, ADC_LOW_TRESHOLD
+.set ADC_RAPID_CHG_THR_VALUE, ADC_RAPID_CHANGE_TRESHOLD
 
 /* Global variables */
 .bss
 /* ULP memory is 32-bit word addressed - must use .long for reliable access */
 /* For values that fit in 16 bits, we use only lower 16 bits of the 32-bit word */
-.global wake_data
-wake_data:
-    .long 0  /* 32-bit: packed wake source/reason data */
+
+/* Wake status - 2 variables instead of 1 (saves code) or 6 (saves data) */
+.global curr_wake_status
+curr_wake_status:
+    .long 0  /* Packed: bits 0-1=source, 2-4=adc_reason, 5-7=button_reason */
+.global last_wake_status
+last_wake_status:
+    .long 0  /* Packed: bits 0-1=source, 2-4=adc_reason, 5-7=button_reason */
 
 #if CONFIG_ULP_BUTTON_ENABLED
 .global button_press_counter
@@ -41,32 +54,23 @@ button_last_result:
     .long 0  /* ULP st instruction writes 32-bit, must use .long */
 #endif
 
-.global low_thr
-low_thr:
-    .long 0  /* 32-bit word, only lower 12 bits used (ADC threshold max 4095) */
 .global last_result
 last_result:
     .long 0  /* 32-bit word, only lower 12 bits used (ADC reading max 4095) */
 
 #if CONFIG_ULP_BATTERY_MONITORING_ENABLED
-.global rapid_change_thr
-rapid_change_thr:
-    .long 0  /* 32-bit word, only lower 16 bits used (~120) */
 .global cum_change
 cum_change:
     .long 0  /* 32-bit word, only lower 16 bits used */
-.global prev_result
-prev_result: 
-    .space (ADC_HISTORY_SIZE * 4)  /* 8 elements * 4 bytes, only lower 12 bits used */
-.global prev_result_idx
-prev_result_idx:
-    .long 0  /* 32-bit word, only lower 16 bits used (index 0-7) */
-.global sample_count
-sample_count:
-    .long 0  /* 32-bit word, only lower 16 bits used (count 0-8) */
+.global history
+history: 
+    .space (ADC_HISTORY_SIZE * 4)  /* 4 elements * 4 bytes, only lower 12 bits used */
+.global history_idx
+history_idx:
+    .long 0  /* 32-bit word, only lower 16 bits used (index 0-3) */
 .global running_sum
 running_sum:
-    .long 0  /* 32-bit: full word used (sum can be 8*4095=32760) */
+    .long 0  /* 32-bit: full word used (sum can be 4*4095=16380) */
 #endif
 
 .global cycle_count
@@ -76,6 +80,16 @@ cycle_count:
 .text
 .global entry
 entry:
+    /* CRITICAL: Check wake status FIRST, before anything else!
+     * If a wake event is pending, we MUST skip ALL processing to preserve the wake reason.
+     * This prevents ADC from overwriting button wake status. */
+    move r1, curr_wake_status
+    ld r2, r1, 0
+    and r3, r2, ULP_WAKE_CURRENT_SOURCE_MASK
+    move r0, 0
+    sub r0, r3, r0  /* Check if source != 0 */
+    jump adc_frozen, ov  /* If wake source is set (non-zero), skip everything and sleep */
+
     /* DON'T clear wake_data here - main CPU clears it via adc_ulp_clear_wake_sources() */
     /* This preserves wake_data so main CPU can read it after ULP wake */
 
@@ -84,20 +98,23 @@ entry:
 
 #if CONFIG_ULP_BATTERY_MONITORING_ENABLED
     /* Initialize first time flag check for ADC */
-    move r1, sample_count
+    /* First run if both history_idx==0 AND cycle_count==0 */
+    move r1, history_idx
     ld r2, r1, 0
-    jump first_run_init, eq  // If sample_count is 0, do initialization
+    jump check_cycle_count, eq  // If idx is 0, check cycle_count
+    jump main_loop              // idx != 0, not first run
+    
+check_cycle_count:
+    move r1, cycle_count
+    ld r2, r1, 0
+    jump first_run_init, eq     // If cycle_count is also 0, do initialization
 #endif
     jump main_loop
 
 first_run_init:
 #if CONFIG_ULP_BATTERY_MONITORING_ENABLED
     /* First run - initialize ALL variables */
-    move r1, sample_count
-    move r2, 0
-    st r2, r1, 0
-    
-    move r1, prev_result_idx
+    move r1, history_idx
     move r2, 0
     st r2, r1, 0
     
@@ -117,9 +134,11 @@ first_run_init:
     st r2, r1, 0
 #endif
 
-    /* Clear wake_data including debug button counter (bits 16-17) */
-    move r1, wake_data
+    /* Clear wake status variables */
     move r2, 0
+    move r1, curr_wake_status
+    st r2, r1, 0
+    move r1, last_wake_status
     st r2, r1, 0
 
 main_loop:
@@ -189,33 +208,17 @@ check_adc_timing:
 
 #if CONFIG_ULP_BUTTON_ENABLED
 button_long_press_detected:
-    /* Set button wake reason */
-    move r0, 1              /* ULP_BUTTON_WAKE_LONG_PRESS */
+    /* Set button wake - OPTIMIZED: copy current->last in 2 instructions! */
     
-    /* Inline set_button_wake logic */
-    move r1, wake_data
+    /* Copy current to last (single load/store) */
+    move r1, curr_wake_status
     ld r2, r1, 0
+    move r1, last_wake_status
+    st r2, r1, 0
     
-    /* For button wake, clear last wake reasons but preserve current->last shift */
-    move r3, r2
-    and r3, r3, 0x00FF      /* Get current bits (0-7) */
-    lsh r3, r3, 8           /* Shift to last position (8-15) */
-    
-    /* But clear the last ADC and button reasons (keep last source) */
-    and r3, r3, ULP_WAKE_LAST_SOURCE_MASK  /* Only keep source bits */
-    
-    and r2, r2, 0xFF00      /* Clear current bits */
-    or r2, r2, r3           /* Combine with cleared last reasons */
-    
-    /* Clear current button and source, set new values */
-    and r2, r2, 0xFF1C  /* ~(ULP_WAKE_CURRENT_BUTTON_MASK | ULP_WAKE_CURRENT_SOURCE_MASK) */
-    /* Set button source bit (bit 1) */
-    or r2, r2, ULP_WAKE_SOURCE_BUTTON
-
-    /* Set button reason bits (bits 5-7) */
-    lsh r0, r0, ULP_WAKE_CURRENT_BUTTON_SHIFT
-    or r2, r2, r0
-    
+    /* Set new current status - preprocessor-calculated from container macro! */
+    move r2, ULP_WAKE_STATUS_BUTTON_LONG_PRESS   /* Auto-generated: (BUTTON | (LONG_PRESS << 5)) = 0x22 */
+    move r1, curr_wake_status
     st r2, r1, 0
     
     /* Reset button counter */
@@ -231,11 +234,11 @@ button_long_press_detected:
 
 adc_measure_and_check:
     /* Check if we already have a wake event pending - if so, FREEZE all ADC processing */
-    move r1, wake_data
+    move r1, curr_wake_status
     ld r2, r1, 0
-    and r3, r2, ULP_WAKE_CURRENT_SOURCE_MASK  /* Check bits 0-1 for wake source */
+    and r3, r2, ULP_WAKE_CURRENT_SOURCE_MASK
     move r0, 0
-    sub r0, r3, r0  /* Check if r3 != 0 */
+    sub r0, r3, r0  /* Check if source != 0 */
     jump adc_frozen, ov  /* If wake source is set (non-zero), skip all ADC processing */
 
     /* === ADC MEASUREMENT === */
@@ -277,27 +280,20 @@ adc_read_loop:
     st r0, r1, 0
     
     /* 1. Get current index value */
-    move r1, prev_result_idx       /* r1 = address of index var */
-    ld r2, r1, 0                   /* r2 = index value (0-7) */
+    move r1, history_idx       /* r1 = address of index var */
+    ld r2, r1, 0                   /* r2 = index value (0-3) */
     
-    /* 2. If buffer is full (sample_count >= 8), subtract old value from running sum */
-    move r1, sample_count
-    ld r3, r1, 0                   /* r3 = sample_count */
-    move r1, ADC_HISTORY_SIZE
-    sub r1, r3, r1                 /* Check if sample_count >= 8 */
-    jump buffer_not_full, ov       /* Skip subtraction if not full */
+    /* 2. ALWAYS subtract old value from running sum (even if buffer not full, we'll add it back) */
+    /* Get old value at current index */
+    move r1, history           /* r1 = array base */
+    add r1, r1, r2                 /* r1 = &history[index] */
+    ld r0, r1, 0                   /* r0 = old value at this index */
     
-    /* Buffer is full - subtract old value at current index from running sum */
-    move r1, prev_result           /* r1 = array base */
-    lsh r3, r2, 0                  /* r3 = index * 1 (word addressing) */
-    add r1, r1, r3                 /* r1 = &prev_result[index] */
-    ld r3, r1, 0                   /* r3 = old value at this index */
+    /* Subtract from running sum */
     move r1, running_sum
-    ld r0, r1, 0                   /* r0 = current running_sum */
-    sub r0, r0, r3                 /* running_sum -= old_value */
-    st r0, r1, 0                   /* store updated sum */
-    
-buffer_not_full:
+    ld r3, r1, 0                   /* r3 = current running_sum */
+    sub r3, r3, r0                 /* running_sum -= old_value */
+    st r3, r1, 0                   /* store updated sum */
     /* 3. Add new ADC value to running sum */
     move r1, last_result
     ld r0, r1, 0                   /* r0 = new ADC value */
@@ -307,46 +303,29 @@ buffer_not_full:
     st r3, r1, 0                   /* store updated sum */
     
     /* 4. Store new ADC value in array at current index */
-    move r1, prev_result_idx
+    move r1, history_idx
     ld r2, r1, 0                   /* r2 = current index */
-    move r3, prev_result           /* r3 = array base */
+    move r3, history           /* r3 = array base */
     lsh r1, r2, 0                  /* r1 = index * 1 (word addressing) */
-    add r3, r3, r1                 /* r3 = &prev_result[index] */
+    add r3, r3, r1                 /* r3 = &history[index] */
     move r1, last_result
     ld r0, r1, 0                   /* r0 = new ADC value */
     st r0, r3, 0                   /* Store in array */
     
-    /* 5. Advance index: (index + 1) % 8 */
-    move r1, prev_result_idx
+    /* 5. Advance index: (index + 1) % ADC_HISTORY_SIZE */
+    move r1, history_idx
     ld r2, r1, 0                   /* r2 = current index */
     add r2, r2, 1                  /* index + 1 */
-    and r2, r2, (ADC_HISTORY_SIZE-1) /* wrap 0-7 */
+    move r3, (ADC_HISTORY_SIZE-1) /* FIX: 7 for size 8 */
+    and r2, r2, r3                 /* wrap 0-7 */
     st r2, r1, 0                   /* store new index */
     
-    /* 6. Update sample_count - cap at ADC_HISTORY_SIZE */
-    move r1, sample_count
+    /* 6. Only process if we have at least ADC_HISTORY_SIZE samples (cycle_count >= 4) */
+    move r1, cycle_count
     ld r2, r1, 0
     move r3, ADC_HISTORY_SIZE
     sub r0, r2, r3
-    jump sample_full, eq  /* If already at max (8), don't increment */
-    
-    /* Increment sample_count */
-    add r2, r2, 1
-    st r2, r1, 0
-    jump check_full
-    
-sample_full:
-    /* Already at max size, keep it there */
-    move r2, ADC_HISTORY_SIZE
-    st r2, r1, 0
-
-check_full:
-    /* Only process if we have at least 4 samples */
-    move r1, sample_count
-    ld r2, r1, 0
-    move r3, 4
-    sub r0, r2, r3
-    jump adc_exit, ov
+    jump adc_exit, ov              /* Skip if cycle_count < ADC_HISTORY_SIZE */
     
     jump adc_calc_running_avg
 
@@ -358,6 +337,15 @@ adc_calc_running_avg:
     
     /* Calculate average (divide by ULP_ADC_HISTORY_SHIFT) */
     rsh r2, r2, ULP_ADC_HISTORY_SHIFT  /* r2 = running_sum / 8 */
+
+    /* CRITICAL: Don't check rapid change on cold start (when history buffer not yet filled)
+     * If cycle_count < HISTORY_SIZE, we don't have enough data for accurate comparison
+     * Comparing against zeros or partial data causes false triggers! */
+    move r1, cycle_count
+    ld r0, r1, 0
+    move r1, ULP_ADC_HISTORY_SIZE
+    sub r0, r0, r1                 /* r0 = cycle_count - HISTORY_SIZE */
+    jump adc_check_thresholds, ov  /* If cycle_count < HISTORY_SIZE, skip rapid change check */
 
     /* Calculate absolute difference between current reading and running average */
     /* This detects RAPID changes, not cumulative drift */
@@ -380,8 +368,7 @@ adc_store_diff:
     /* Check rapid change: if absolute difference >= threshold, trigger wake */
     move r3, cum_change
     ld r0, r3, 0                   /* r0 = absolute difference */
-    move r3, rapid_change_thr
-    ld r1, r3, 0                   /* r1 = rapid_change_thr */
+    move r1, ADC_RAPID_CHG_THR_VALUE  /* Direct immediate value, no RAM needed! */
     
     /* Compare: difference - threshold */
     sub r0, r0, r1                 /* r0 = difference - threshold */
@@ -392,11 +379,10 @@ adc_store_diff:
 #endif
 
 adc_check_thresholds:
-    /* Check last_result < low_thr */
+    /* Check last_result < ADC_LOW_THR_VALUE (compile-time constant) */
     move r3, last_result
     ld r0, r3, 0
-    move r3, low_thr
-    ld r1, r3, 0
+    move r1, ADC_LOW_THR_VALUE   /* Direct immediate value, no RAM needed! */
     sub r0, r0, r1
     jump adc_low_threshold_triggered, ov
 
@@ -409,116 +395,67 @@ adc_frozen:
 adc_exit:
     jump sleep_cycle
 
-debug_periodic_wake:
-    /* Trigger wake using high threshold reason (since high threshold never actually triggers) */
-    move r1, wake_data
-    ld r2, r1, 0
-    
-    /* Shift current to last */
-    move r3, r2
-    and r3, r3, 0x00FF      /* Get current bits (0-7) */
-    lsh r3, r3, 8           /* Shift to last position (8-15) */
-    and r2, r2, 0xFF00      /* Clear current bits, keep last */
-    or r2, r2, r3           /* Combine old current into last */
-    
-    /* Set debug wake reason using ADC high threshold (value 2) */
-    and r2, r2, 0xFFE3      /* Clear current ADC and source bits (bits 0-4) */
-    or r2, r2, 0x0009       /* ULP_WAKE_SOURCE_ADC (1) | (ULP_ADC_WAKE_HIGH_THR (2) << 2) = 1 + 8 = 9 */
-    
-    st r2, r1, 0
-    jump wake_main_cpu
-
 adc_low_threshold_triggered:
-    /* Check if same as last wake reason (anti-spam) */
-    move r1, wake_data
+    /* Check if same as last wake reason (anti-spam) - OPTIMIZED! */
+    move r1, last_wake_status
     ld r2, r1, 0
-    
-    /* Extract last ADC reason */
-    and r1, r2, ULP_WAKE_LAST_ADC_MASK         /* Last ADC reason */
-    rsh r1, r1, ULP_WAKE_LAST_ADC_SHIFT
+    and r2, r2, ULP_WAKE_CURRENT_ADC_MASK
+    rsh r2, r2, ULP_WAKE_CURRENT_ADC_SHIFT
     
     /* If last reason is NONE (0), always wake - this is first wake */
     jump adc_low_set_wake, eq
     
-    /* Extract current ADC reason */
-    and r3, r2, ULP_WAKE_CURRENT_ADC_MASK      /* Current ADC reason */
-    rsh r3, r3, ULP_WAKE_CURRENT_ADC_SHIFT
+    /* Get current ADC reason (we know it's LOW_THR=1) */
+    move r3, ULP_ADC_WAKE_LOW_THR
     
-    /* Compare current with last */
-    sub r0, r3, r1
+    /* Compare with last */
+    sub r0, r3, r2
     jump adc_exit, eq       /* Skip only if same non-zero reason */
     
 adc_low_set_wake:
-    /* Set ADC wake reason */
-    move r1, wake_data
+    /* Copy current to last (single load/store) */
+    move r1, curr_wake_status
     ld r2, r1, 0
-    
-    /* Shift current to last */
-    move r3, r2
-    and r3, r3, 0x00FF      /* Get current bits (0-7) */
-    lsh r3, r3, 8           /* Shift to last position (8-15) */
-    and r2, r2, 0xFF00      /* Clear current bits, keep last */
-    or r2, r2, r3           /* Combine old current into last */
-    
-    /* Clear current ADC and source bits (0-4) */
-    and r2, r2, 0xFFE0      /* Clear bits 0-4 */
-    
-    /* Set source = ADC (bit 0) */
-    or r2, r2, ULP_WAKE_SOURCE_ADC  /* Set bit 0 = 1 */
-    
-    /* Set ADC reason = LOW_THR (1) in bits 2-4 */
-    move r0, ULP_ADC_WAKE_LOW_THR   /* r0 = 1 */
-    lsh r0, r0, 2                    /* r0 = 1 << 2 = 4 */
-    or r2, r2, r0                    /* Set bits 2-4 */
-    
+    move r1, last_wake_status
     st r2, r1, 0
+    
+    /* Set current status - preprocessor-calculated from container macro! */
+    move r2, ULP_WAKE_STATUS_ADC_LOW_THR         /* Auto-generated: (ADC | (LOW_THR << 2)) = 0x05 */
+    move r1, curr_wake_status
+    st r2, r1, 0
+    
     jump wake_main_cpu
 
 #if CONFIG_ULP_BATTERY_MONITORING_ENABLED
 adc_rapid_change_triggered:
-    /* Check if same as last wake reason (anti-spam) */
-    move r1, wake_data
+    /* Check if same as last wake reason (anti-spam) - OPTIMIZED! */
+    move r1, last_wake_status
     ld r2, r1, 0
-    
-    /* Extract last ADC reason */
-    and r1, r2, ULP_WAKE_LAST_ADC_MASK         /* Last ADC reason */
-    rsh r1, r1, ULP_WAKE_LAST_ADC_SHIFT
+    and r2, r2, ULP_WAKE_CURRENT_ADC_MASK
+    rsh r2, r2, ULP_WAKE_CURRENT_ADC_SHIFT
     
     /* If last reason is NONE (0), always wake - this is first wake */
     jump adc_rapid_set_wake, eq
     
-    /* Extract current ADC reason */
-    and r3, r2, ULP_WAKE_CURRENT_ADC_MASK      /* Current ADC reason */
-    rsh r3, r3, ULP_WAKE_CURRENT_ADC_SHIFT
+    /* Get current ADC reason (we know it's RAPID_CHG=3) */
+    move r3, ULP_ADC_WAKE_RAPID_CHG
     
-    /* Compare current with last */
-    sub r0, r3, r1
+    /* Compare with last */
+    sub r0, r3, r2
     jump adc_exit, eq       /* Skip only if same non-zero reason */
     
 adc_rapid_set_wake:
-    /* Set ADC wake reason */
-    move r1, wake_data
+    /* Copy current to last (single load/store) */
+    move r1, curr_wake_status
     ld r2, r1, 0
-    
-    /* Shift current to last */
-    move r3, r2
-    and r3, r3, 0x00FF      /* Get current bits (0-7) */
-    lsh r3, r3, 8           /* Shift to last position (8-15) */
-    and r2, r2, 0xFF00      /* Clear current bits, keep last */
-    or r2, r2, r3           /* Combine old current into last */
-    
-    /* Clear current ADC and source bits (0-4) */
-    and r2, r2, 0xFFE0      /* Clear bits 0-4 */
-    
-    /* Set source = ADC (bit 0) */
-    or r2, r2, ULP_WAKE_SOURCE_ADC  /* Set bit 0 = 1 */
-    
-    /* Set ADC reason = RAPID_CHG (3) in bits 2-4 */
-    move r0, ULP_ADC_WAKE_RAPID_CHG  /* r0 = 3 */
-    lsh r0, r0, 2                     /* r0 = 3 << 2 = 12 */
-    or r2, r2, r0                     /* Set bits 2-4 */
-    
+    move r1, last_wake_status
     st r2, r1, 0
+    
+    /* Set current status - preprocessor-calculated from container macro! */
+    move r2, ULP_WAKE_STATUS_ADC_RAPID_CHG       /* Auto-generated: (ADC | (RAPID_CHG << 2)) = 0x09 */
+    move r1, curr_wake_status
+    st r2, r1, 0
+    
     jump wake_main_cpu
 #endif
 
@@ -531,6 +468,13 @@ wake_main_cpu:
 
 sleep_cycle:
     /* Never clear wake_data once set - only main CPU can clear it via entry point */
-    /* This ensures wake reason persists until main CPU processes it */
-    wait CYCLE_WAIT_TICKS
+    /* Wait for configured delay using loop (wait instruction limited to 16-bit) */
+    stage_rst
+    stage_inc WAIT_ITERATIONS
+
+wait_loop:
+    wait WAIT_TICKS_PER_ITER
+    stage_dec 1
+    jumps wait_loop, 1, ge  /* Continue if stage >= 1 */
+    
     jump main_loop

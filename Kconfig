@@ -128,6 +128,21 @@ menu "Logger ADC Module Options"
                 
                 Note: Ensure a voltage divider is connected to the selected ADC channel
                 to step down battery voltage within ADC input range.
+        
+        config LOGGER_ADC_USE_ULP_AS_PRIMARY
+            bool "Use ULP as primary battery ADC source"
+            depends on ULP_BATTERY_MONITORING_ENABLED
+            default y
+            help
+                When enabled, ULP coprocessor readings are used as the primary battery 
+                voltage source. Regular ADC readings are disabled to save power.
+                
+                Benefits:
+                - Lower power consumption (ULP runs during deep sleep)
+                - Continuous monitoring without waking main CPU
+                - Faster wake-up response to battery events
+                
+                Disable this to use regular ADC as primary source (ULP only for wake events).
         config ULP_BUTTON_ENABLED
             bool "Enable ULP button monitoring"
             default y

@@ -7,9 +7,9 @@ extern "C" {
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "adc_defs.h"  /* Assembly-safe public definitions */
 
 #define ADC_BAT_STATES_ENUM(l) ADC_BATTERY_##l,
-#define ADC_WAKE_SOURCES_ENUM(l) WAKE_SOURCE_##l,
 #define ADC_BUTTON_STATES_ENUM(l) ADC_BUTTON_##l,
 
 #define ADC_BAT_STATES(l) \
@@ -25,11 +25,8 @@ extern "C" {
     l(NONE) \
     l(LONG_PRESS)
 
-#define ADC_ULP_WAKE_SOURCES(l) \
-    l(NONE) \
-    l(ADC) \
-    l(BUTTON) \
-    l(BOTH)
+/* Note: ADC_ULP_ADC_WAKE_REASONS, ADC_ULP_BUTTON_WAKE_REASONS, and ADC_ULP_WAKE_SOURCES
+ * are now defined in adc_defs.h as the single source of truth */
 
 /* ADC battery state enumeration - used for both ULP and regular ADC modes */
 typedef enum {
@@ -45,20 +42,30 @@ typedef enum {
 
 typedef enum {
     ADC_BUTTON_STATES(ADC_BUTTON_STATES_ENUM)
-    // BUTTON_NONE = 0,
-    // BUTTON_LONG_PRESS = 1
 } adc_button_state_t;
 
+/* ULP wake reason enumerations - public API */
 typedef enum {
-    ADC_ULP_WAKE_SOURCES(ADC_WAKE_SOURCES_ENUM)
+    ADC_ULP_ADC_WAKE_REASONS(ADC_ULP_ADC_WAKE_REASONS_ENUM)
+} adc_ulp_adc_wake_reason_t;
+
+typedef enum {
+    ADC_ULP_BUTTON_WAKE_REASONS(ADC_ULP_BUTTON_WAKE_REASONS_ENUM)
+} adc_ulp_button_wake_reason_t;
+
+typedef enum {
+    ADC_ULP_WAKE_SOURCES(ADC_ULP_WAKE_SOURCES_ENUM)
     // WAKE_SOURCE_NONE    = 0x0,
     // WAKE_SOURCE_ADC     = 0x1,
     // WAKE_SOURCE_BUTTON  = 0x2,
     // WAKE_SOURCE_BOTH    = 0x3
 } adc_ulp_wake_source_t;
 
+/* String arrays for enums (for debugging) */
 extern const char* adc_battery_states_str[];
 extern const char* adc_ulp_wake_sources_str[];
+extern const char* adc_ulp_adc_wake_reasons_str[];
+extern const char* adc_ulp_button_wake_reasons_str[];
 
 /* Main ADC functions */
 int adc_init();
@@ -100,7 +107,9 @@ bool should_filter_charge_events(void);             /* Check if charge events sh
 
 #if defined(CONFIG_ULP_COPROC_ENABLED)
 
-int init_ulp_program(void);
+int init_ulp_program(void);                        /* Load ULP binary (runs once at power-up) */
+esp_err_t init_ulp_adc(void);                      /* Initialize ULP ADC hardware (with locking) */
+void deinit_ulp_adc(void);                         /* Deinitialize ULP ADC hardware (with locking) */
 void start_ulp_program(void);
 void debug_ulp_status(void);                /* Debug function to show ULP status */
 adc_battery_state_t get_battery_state_from_ulp(void);  /* Get battery state using ULP variables on wakeup */
@@ -108,11 +117,22 @@ uint8_t adc_get_ulp_wake_source(void);                /* Get current ULP wake so
 uint8_t adc_get_ulp_last_wake_reason(void);
 uint8_t adc_get_ulp_wake_reason(void);                /* Get specific ADC wake reason */
 void adc_ulp_clear_wake_sources(void);                     /* Clear all ULP wake sources */
+uint8_t adc_ulp_after_wake(void);                /* Update last based on current wake source */
 bool adc_ulp_threshold_triggered(void);                /* Check if ULP detected ADC threshold trigger */
+uint32_t adc_ulp_get_cycle_count(void);                /* Get ULP cycle count - safe RTC memory access */
 
 /* Unified ULP sensor functions - for both ADC and button */
 bool adc_ulp_button_long_press_detected(void);             /* Check if ULP detected button long press */
 void adc_ulp_uninit_pins(void);
+
+/**
+ * @brief Resume ULP program after ULP wake (preserves ADC history)
+ * 
+ * Resumes ULP execution without clearing ADC history. Used when going back to
+ * sleep immediately after processing a ULP wake event. Preserves monitoring
+ * state so rapid change detection continues to work.
+ */
+void resume_ulp_program(void);
 
 #endif /* CONFIG_ULP_COPROC_ENABLED */
 

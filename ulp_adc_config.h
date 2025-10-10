@@ -6,67 +6,58 @@
  */
 
 #include "sdkconfig.h"
+#include "adc_defs.h"  /* Import public wake source/reason values - single source of truth */
+
+/* Note: Wake source and reason values are now defined in adc_defs.h:
+ * - ULP_WAKE_SOURCE_* (NONE, ADC, BUTTON, BOTH)
+ * - ULP_ADC_WAKE_* (NONE, LOW_THR, RAPID_CHG)
+ * - ULP_BUTTON_WAKE_* (NONE, LONG_PRESS)
+ */
 
 #define JOIN(x, y) JOIN_AGAIN(x, y)
 #define JOIN_AGAIN(x, y) x ## y
 
-#define ULP_ADC_HISTORY_SIZE 4 // Must be power of 2: 2, 4, or 8 (reduced to 4 to save ULP RAM)
+// Hybrid 2-variable wake status layout (curr_wake_status & last_wake_status):
+// Both variables use same bit layout (only CURRENT masks needed):
+// Bit 0-1:   wake_source (ADC=01, BUTTON=10, BOTH=11)
+// Bit 2-4:   adc_reason (none=000, low=001, rapid=010)
+// Bit 5-7:   button_reason (none=000, long_press=001)
 
-#if (ULP_ADC_HISTORY_SIZE == 16)
-#define ULP_ADC_HISTORY_SHIFT 4
-#elif (ULP_ADC_HISTORY_SIZE == 8)
-#define ULP_ADC_HISTORY_SHIFT 3
-#elif (ULP_ADC_HISTORY_SIZE == 4)
-#define ULP_ADC_HISTORY_SHIFT 2
-#elif (ULP_ADC_HISTORY_SIZE == 2)
-#define ULP_ADC_HISTORY_SHIFT 1
-#else
-#error "ULP_ADC_HISTORY_SIZE must be 2, 4, or 8"
-#endif
-
-#define ULP_ADC_OVERSAMPLING 2  // 4 samples
-#define ULP_ADC_STABILIZATION_DELAY 5000
-
-// Single 16-bit variable layout:
-// Bit 0-1:   current_wake_source (ADC=01, BUTTON=10, BOTH=11)
-// Bit 2-4:   current_adc_reason (low=001, high=010, rapid=011)
-// Bit 5-7:   current_button_reason (long_press=001)
-// Bit 8-9:   last_wake_source (same encoding as current)
-// Bit 10-12: last_adc_reason (same encoding as current)
-// Bit 13-15: last_button_reason (same encoding as current)
-
-// Bit masks and shifts
+// Bit masks and shifts (CURRENT masks work for both curr and last variables)
 #define ULP_WAKE_CURRENT_SOURCE_MASK    0x0003
 #define ULP_WAKE_CURRENT_SOURCE_SHIFT   0
 #define ULP_WAKE_CURRENT_ADC_MASK       0x001C
 #define ULP_WAKE_CURRENT_ADC_SHIFT      2
 #define ULP_WAKE_CURRENT_BUTTON_MASK    0x00E0
 #define ULP_WAKE_CURRENT_BUTTON_SHIFT   5
-#define ULP_WAKE_LAST_SOURCE_MASK       0x0300
-#define ULP_WAKE_LAST_SOURCE_SHIFT      8
-#define ULP_WAKE_LAST_ADC_MASK          0x1C00
-#define ULP_WAKE_LAST_ADC_SHIFT         10
-#define ULP_WAKE_LAST_BUTTON_MASK       0xE000
-#define ULP_WAKE_LAST_BUTTON_SHIFT      13
-// Debug: Button press counter (2 bits, values 0-3)
-#define ULP_WAKE_DEBUG_BTN_COUNT_MASK   0x30000
-#define ULP_WAKE_DEBUG_BTN_COUNT_SHIFT  16
 
-// Wake sources (3 possible values)
-#define ULP_WAKE_SOURCE_NONE    0x0
-#define ULP_WAKE_SOURCE_ADC     0x1
-#define ULP_WAKE_SOURCE_BUTTON  0x2
-#define ULP_WAKE_SOURCE_BOTH    0x3
+/********************************************************************
+ * Wake Status Values - Semi-Dynamic Generation Pattern
+ * 
+ * LIMITATION: The preprocessor cannot dynamically generate #define statements.
+ * The # character is special and cannot be created by macro expansion.
+ * 
+ * SOLUTION: These #defines reference the base values from adc_defs.h container
+ * macros (ULP_ADC_WAKE_*, ULP_BUTTON_WAKE_*), so changing values in ONE place
+ * (adc_defs.h) automatically updates calculations here.
+ * 
+ * To add a new wake reason:
+ * 1. Add to container macro in adc_defs.h: l(NEW_REASON, 0x3)
+ * 2. Add ONE line here: #define ULP_WAKE_STATUS_ADC_NEW_REASON ((ULP_WAKE_SOURCE_ADC) | (ULP_ADC_WAKE_NEW_REASON << ULP_WAKE_CURRENT_ADC_SHIFT))
+ * 
+ * The value (0x3) only needs to be changed in adc_defs.h!
+ ********************************************************************/
 
-// ADC wake reasons (4 possible values)
-#define ULP_ADC_WAKE_NONE       0x0
-#define ULP_ADC_WAKE_LOW_THR    0x1
-#define ULP_ADC_WAKE_HIGH_THR   0x2
-#define ULP_ADC_WAKE_RAPID_CHG  0x3
+/* ADC wake status values: (source=ADC | (reason << ADC_SHIFT))
+ * Values auto-calculated from ULP_ADC_WAKE_* constants in adc_defs.h */
+#define ULP_WAKE_STATUS_ADC_NONE        ((ULP_WAKE_SOURCE_ADC) | (ULP_ADC_WAKE_NONE << ULP_WAKE_CURRENT_ADC_SHIFT))
+#define ULP_WAKE_STATUS_ADC_LOW_THR     ((ULP_WAKE_SOURCE_ADC) | (ULP_ADC_WAKE_LOW_THR << ULP_WAKE_CURRENT_ADC_SHIFT))
+#define ULP_WAKE_STATUS_ADC_RAPID_CHG   ((ULP_WAKE_SOURCE_ADC) | (ULP_ADC_WAKE_RAPID_CHG << ULP_WAKE_CURRENT_ADC_SHIFT))
 
-// Button wake reasons (2 possible values)
-#define ULP_BUTTON_WAKE_NONE    0x0
-#define ULP_BUTTON_WAKE_LONG_PRESS 0x1
+/* Button wake status values: (source=BUTTON | (reason << BUTTON_SHIFT))
+ * Values auto-calculated from ULP_BUTTON_WAKE_* constants in adc_defs.h */
+#define ULP_WAKE_STATUS_BUTTON_NONE       ((ULP_WAKE_SOURCE_BUTTON) | (ULP_BUTTON_WAKE_NONE << ULP_WAKE_CURRENT_BUTTON_SHIFT))
+#define ULP_WAKE_STATUS_BUTTON_LONG_PRESS ((ULP_WAKE_SOURCE_BUTTON) | (ULP_BUTTON_WAKE_LONG_PRESS << ULP_WAKE_CURRENT_BUTTON_SHIFT))
 
 #ifdef CONFIG_ULP_BUTTON_ENABLED
 #if defined(CONFIG_HAS_BOARD_LILYGO_EPAPER_T5)
@@ -94,7 +85,7 @@
 
 /* Rapid change threshold - wake up if voltage changes by more than this amount
  * between consecutive measurements (in ADC units, ~100 = ~0.08V change) */
-#define ADC_RAPID_CHANGE_TRESHOLD   120
+#define ADC_RAPID_CHANGE_TRESHOLD   100
 
 #define VOLTAGE_MAX 4200UL
 #define VOLTAGE_MIN 3200UL
