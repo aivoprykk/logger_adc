@@ -266,5 +266,5 @@ wake_main_cpu:
     and r0, r0, 1
     jump exit, eq
     wake
-    WRITE_RTC_FIELD(RTC_CNTL_STATE0_REG, RTC_CNTL_ULP_CP_SLP_TIMER_EN, 0)
-    halt
+    /* WRITE_RTC_FIELD(RTC_CNTL_STATE0_REG, RTC_CNTL_ULP_CP_SLP_TIMER_EN, 0)
+    halt */

@@ -7,7 +7,6 @@
 #include <string.h>
 
 #include <esp_idf_version.h>
-
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
 #include "freertos/semphr.h"
 #include "esp_timer.h"
@@ -87,7 +86,7 @@ static const char *TAG = "adc";
 #define V_GRAPH_LIPO_LEN 21
 #define ADJ_LENGTH 24
 
-#if !defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if !defined(CONFIG_LOGGER_ADC_MODE_ULP)
 typedef struct {
     uint32_t result[RESULT_SIZE];
     uint8_t head;      // Next write position
@@ -100,19 +99,19 @@ typedef struct adc_context_s {
     uint32_t adc_raw;
     uint32_t adc_voltage;
     uint8_t do_calibration;
-    adc_cali_handle_t adc1_cali_handle;
 #if defined(AC_DETECTABLE ) && !(defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3) || defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3_AMOLED))
     uint32_t running_sum;
     uint32_t running_avg;
     uint32_t m_avg[3];
 #endif
-#if !defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
-    adc_buffer_t adc_buffer;
-#endif
     SemaphoreHandle_t xMutex;
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP) || defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
+    esp_timer_handle_t adc_periodic_timer;
+#endif
+#if !defined(CONFIG_LOGGER_ADC_MODE_ULP)
+    adc_buffer_t adc_buffer;
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
     adc_oneshot_unit_handle_t adc1_handle;
-    esp_timer_handle_t adc_periodic_timer;
 #elif defined(CONFIG_LOGGER_ADC_MODE_CONTINUOUS)
     adc_continuous_handle_t adc1_handle;
     TaskHandle_t adc_task_handle;
@@ -120,15 +119,19 @@ typedef struct adc_context_s {
     uint8_t result[READ_LEN];
     uint8_t task_is_running;
 #endif
+#else
+    adc_cali_handle_t adc1_cali_handle;
+#endif
 } adc_context_t;
 
-#if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP) || defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
 #define CTX_PART .adc_periodic_timer = NULL,
 #elif defined(CONFIG_LOGGER_ADC_MODE_CONTINUOUS)
 #define CTX_PART .adc_task_handle = NULL, \
     .ret_num = 0, \
     .task_is_running = 1,
 #endif
+
 #if defined(AC_DETECTABLE ) && !(defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3) || defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3_AMOLED))
 #define AC_DET_PART .on_ac = 0, \
     .running_sum = 0, \
@@ -137,19 +140,21 @@ typedef struct adc_context_s {
 #else
 #define AC_DET_PART
 #endif
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
 #define ADC_BUF
 #else
-#define ADC_BUF .adc_buffer = {{0},0,0},
+#define ADC_BUF .adc_buffer = {{0},0,0}, \
+    .adc1_handle = NULL, \
+    .adc1_cali_handle = NULL,
 #endif
+
 #define ADC_CONTEXT_DEFAULT { \
     .adc_initialized = 0, \
     .on_ac = 0, \
     .adc_raw = 0, \
     .adc_voltage = 0, \
     .do_calibration = 0, \
-    .adc1_cali_handle = NULL, \
-    .adc1_handle = NULL, \
     .xMutex = NULL, \
     ADC_BUF \
     AC_DET_PART \
@@ -198,7 +203,7 @@ void adc_unlock() {
     }
 }
 
-#if !defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if !defined(CONFIG_LOGGER_ADC_MODE_ULP)
 static inline void add_adc_reading(uint32_t value) {
     adc_ctx.adc_buffer.result[adc_ctx.adc_buffer.head] = value;
     adc_ctx.adc_buffer.head = (adc_ctx.adc_buffer.head + 1) & RESULT_MASK;
@@ -207,7 +212,7 @@ static inline void add_adc_reading(uint32_t value) {
 #endif
 
 static inline uint32_t get_recent_reading(uint8_t pos) {
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     return ULP_GET_U32(ulp_last_result);
 #else
     return adc_ctx.adc_buffer.result[(adc_ctx.adc_buffer.head - 1 - pos) & RESULT_MASK];
@@ -215,7 +220,7 @@ static inline uint32_t get_recent_reading(uint8_t pos) {
 }
 
 static uint32_t get_recent_average_n(uint8_t num_readings) {
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     // ULP running_sum contains sum of raw ADC values, convert to average voltage
     uint32_t raw_sum = ULP_GET_U32(ulp_running_sum);
     uint32_t raw_avg = raw_sum >> ULP_ADC_HISTORY_SHIFT;  // Divide by history size (4)
@@ -243,7 +248,7 @@ static uint32_t get_recent_average_n(uint8_t num_readings) {
 }
 
 static uint32_t get_recent_average(void) {
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     // ULP running_sum contains sum of raw ADC values
     uint32_t raw_sum = ULP_GET_U32(ulp_running_sum);
     uint32_t raw_avg = raw_sum >> ULP_ADC_HISTORY_SHIFT;  // Divide by history size (4)
@@ -254,7 +259,7 @@ static uint32_t get_recent_average(void) {
 }
 
 static uint32_t get_progressive_average(void) {
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     uint8_t available = ULP_GET_U32(ulp_cycle_count) > ULP_ADC_HISTORY_SIZE ? ULP_ADC_HISTORY_SIZE : ULP_GET_U32(ulp_cycle_count);
     uint8_t max = ULP_ADC_HISTORY_SIZE;
 #else
@@ -343,7 +348,7 @@ uint32_t calibrate_adc_raw(uint32_t raw_adc) {
     
     uint32_t calibrated_voltage = 0;
     
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     // 4-point calibration for 3.2V-4.2V range
     /* Direct calibration to battery voltage for 100k+100k divider */
     
@@ -399,7 +404,7 @@ uint32_t calibrate_adc_raw(uint32_t raw_adc) {
  * Helper function to get the most recent ADC reading as voltage
  * Consolidates duplicated voltage conversion logic
  */
-#if !defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if !defined(CONFIG_LOGGER_ADC_MODE_ULP)
 static inline float get_recent_voltage_reading(void) {
     // printf("[%s] convert reading: %f V from %lu\n", __func__, 
     //     VOLTAGE_U32_TO_V((adc_ctx.result[get_adc_index(adc_ctx.result_index-1, 
@@ -447,7 +452,7 @@ float validate_and_clamp_voltage(float voltage, bool is_display_s3) {
  */
 static void post_battery_state_event(adc_battery_state_t state, const char* source) {
     FUNC_ENTRY_ARGS(TAG, "source: %s, state: %d", source, state);
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     uint32_t voltage_mv = calibrate_adc_raw(ULP_GET_U32(ulp_last_result));
 #else
     uint32_t voltage_mv = get_recent_reading(0);
@@ -582,8 +587,57 @@ typedef struct {
 static adc_analysis_t analyze_adc_readings(uint32_t current_reading, uint8_t available);
 
 #define MV_TO_RAW(mv) ((mv * 1752UL) / 3200UL)
+typedef struct {
+    uint32_t threshold;
+    int16_t rate_of_change;
+} threshold_entry_t;
 
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+typedef struct {
+    uint8_t readings;
+    int16_t threshold;
+} trend_entry_t;
+
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
+const threshold_entry_t rise_thresh[] = {
+    {1971L, 82L},   // Below 3600mV equivalent 150mv in raw = (150 × 1752) / 3200 = 82 raw
+    {2081L, 38L},   // 3600-3800mV equivalent 70mv in raw = (70 × 1752) / 3200 = 38 raw
+    {2190L, 27L},   // 3800-4000mV equivalent 50mv in raw = (50 × 1752) / 3200 = 27 raw
+    {UINT32_MAX, 22L},    // Above 4000mV equivalent 40mv in raw = (40 × 1752) / 3200 = 22 raw
+    {2217L, INT16_MAX},    // Additional threshold for high battery 4050mV in raw = (4050 × 1752) / 3200 = 2217 raw
+    {2081L, 16L},    // Additional threshold for high battery 3800mV in raw = (3800 × 1752) / 3200 = 2081 raw
+    {2273U, INT16_MAX} // Extra high threshold to avoid CV oscillations 4150 * 1752 / 3200 = 2273 raw
+};
+const int16_t fall_threshold[] = {44, -11}; // -20mV rate in raw ADC units
+const trend_entry_t trend_detection[] = {{2,16},
+    {2,16},
+#if ULP_ADC_HISTORY_SIZE == 4
+    {4,22},
+#elif ULP_ADC_HISTORY_SIZE == 8
+    {6,30}
+#endif
+};
+#define CRITICAL_LOW 1756
+#define LOW_LEVEL 1878
+#define HIGH_LEVEL 2305
+#else
+const threshold_entry_t rise_thresholds_mv[] = {
+    {3600U, 150L},   // Below 3600mV equivalent 150mv in raw = (150 × 1752) / 3200 = 82 raw
+    {3800U, 70L},    // 3600-3800mV equivalent 70mv in raw = (70 × 1752) / 3200 = 38 raw
+    {4000U, 50L},    // 3800-4000mV equivalent 50mv in raw = (50 × 1752) / 3200 = 27 raw
+    {UINT32_MAX, 40L},     // Above 4000mV equivalent 40mv in raw = (40 × 1752) / 3200 = 22 raw
+    {4050U, INT16_MAX},    // Additional threshold for high battery 4050mV in raw = (4050 × 1752) / 3200 = 2217 raw
+    {3800U, 20L}     // Additional threshold for high battery 3800mV in raw = (3800 × 1752) / 3200 = 2081 raw
+    {4150U, INT16_MAX} // Extra high threshold to avoid CV oscillations
+};
+const int16_t fall_threshold[] = {80, -20}; // -20mV rate in raw ADC units
+const trend_entry_t trend_detection_mv[] = {
+    {2,30},
+    {6,55}
+};
+#define CRITICAL_LOW BATTERY_CRITICAL_LOW_MV
+#define LOW_LEVEL BATTERY_LOW_MV
+#define HIGH_LEVEL BATTERY_HIGH_MV
+#endif
 
 static bool detect_charge_start(uint32_t raw_adc, adc_analysis_t analysis) {
     if (analysis.trend != TREND_RISING || analysis.rate_of_change <= 0) {
@@ -592,91 +646,43 @@ static bool detect_charge_start(uint32_t raw_adc, adc_analysis_t analysis) {
     
     // Define thresholds directly in raw ADC units
     uint32_t rise_threshold;
-    
-    if (raw_adc < 1971) rise_threshold = 55;      // Below 3600mV equivalent
-    else if (raw_adc < 2081) rise_threshold = 38;  // 3600-3800mV equivalent
-    else if (raw_adc < 2190) rise_threshold = 27;  // 3800-4000mV equivalent
-    else rise_threshold = 22;                     // Above 4000mV equivalent
-    
+
+    if (raw_adc < rise_thresh[0].threshold) rise_threshold = rise_thresh[0].rate_of_change;      // Below 3600mV equivalent
+    else if (raw_adc < rise_thresh[1].threshold) rise_threshold = rise_thresh[1].rate_of_change;  // 3600-3800mV equivalent
+    else if (raw_adc < rise_thresh[2].threshold) rise_threshold = rise_thresh[2].rate_of_change;  // 3800-4000mV equivalent
+    else rise_threshold = rise_thresh[3].rate_of_change;                     // Above 4000mV equivalent
+
     bool significant_rise = (analysis.rate_of_change >= rise_threshold);
-    bool voltage_above_normal = (raw_adc > 2217);  // 4050mV equivalent
-    
-    if (raw_adc >= 2081) {  // 3800mV equivalent
-        return significant_rise || (analysis.rate_of_change >= 16 && voltage_above_normal);
+    // bool voltage_above_normal = (raw_adc > rise_thresh[4].threshold);  // 4050mV equivalent
+
+    if (raw_adc >= rise_thresh[5].threshold) {  // 3800mV equivalent
+        // return significant_rise || (analysis.rate_of_change >= rise_thresh[5].rate_of_change && voltage_above_normal);
+        // At high voltage, INCREASE threshold to avoid CV charging oscillations
+        // Require either: very strong rise OR moderate rise + very high voltage
+        bool strong_rise = (analysis.rate_of_change >= rise_thresh[0].rate_of_change);  // 82 raw = 150mV
+        bool extremely_high_voltage = (raw_adc > rise_thresh[6].threshold);  // 4150mV = clearly charging
+        return strong_rise || (significant_rise && extremely_high_voltage);
     } else {
         return significant_rise;
     }
 }
-#else
-/**
- * Robust charge start detection with adaptive thresholds
- */
-static bool detect_charge_start(uint32_t voltage_mv, adc_analysis_t analysis) {
-        // CRITICAL FIX: Only detect charge start if voltage is actually RISING
-    if (analysis.trend != TREND_RISING) {
-        return false; // Cannot be charging if voltage is falling or stable!
-    }
-    
-    // CRITICAL FIX: Require positive rate of change
-    if (analysis.rate_of_change <= 0) {
-        return false; // Cannot be charging if rate is negative or zero!
-    }
-    
-    // Adaptive thresholds (only apply if above conditions are met)
-    uint32_t rise_threshold;
-    
-    if (voltage_mv < 3600) rise_threshold = 100;    // Low battery: expect big jump
-    else if (voltage_mv < 3800) rise_threshold = 70; // Medium battery  
-    else if (voltage_mv < 4000) rise_threshold = 50; // High battery
-    else rise_threshold = 40;                       // Very high battery
-    
-    // Only trigger if we have significant positive rise
-    bool significant_rise = (analysis.rate_of_change >= rise_threshold);
-    bool voltage_above_normal = (voltage_mv > 4050); // Additional confidence
-    
-    // For high batteries, require either significant rise OR moderate rise + above normal
-    if (voltage_mv >= 3800) {
-        return significant_rise || (analysis.rate_of_change >= 30 && voltage_above_normal);
-    } else {
-        // For low batteries, require significant rise only
-        return significant_rise;
-    }
-}
-#endif
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+
 static bool detect_charge_stop(uint32_t raw_adc, adc_analysis_t analysis, uint32_t peak_raw_adc) {
     // Calculate drop from charging peak (in raw units)
     uint32_t drop_from_peak = peak_raw_adc - raw_adc;
     
     // Convert 80mV drop to raw ADC units
     // 80mV in raw = (80 × 1752) / 3200 = 44 raw
-    bool significant_drop = (drop_from_peak >= 44); // 80mV drop equivalent
+    bool significant_drop = (drop_from_peak >= fall_threshold[0]); // 80mV drop equivalent
     
     // Convert -20mV rate to raw ADC units  
     // -20mV in raw = (20 × 1752) / 3200 = 11 raw (use absolute value)
-    bool negative_roc = (analysis.rate_of_change < -11);
-    
-    bool falling_trend = (analysis.trend == TREND_FALLING);
-    
-    return significant_drop && falling_trend && negative_roc;
-}
-#else
-/**
- * Robust charge stop detection with multiple safeguards
- */
-static bool detect_charge_stop(uint32_t voltage_mv, adc_analysis_t analysis, uint32_t peak_voltage) {
-    // Calculate drop from charging peak
-    uint32_t drop_from_peak = peak_voltage - voltage_mv;
-    
-    // Charge stopped if: significant drop AND falling trend
-    bool significant_drop = (drop_from_peak >= 80); // 80mV drop from peak
-    bool falling_trend = (analysis.trend == TREND_FALLING);
-    bool negative_roc = (analysis.rate_of_change < -20);
-    
-    return significant_drop && falling_trend && negative_roc;
-}
+    bool negative_roc = (analysis.rate_of_change < -fall_threshold[1]);
 
-#endif
+    bool falling_trend = (analysis.trend == TREND_FALLING);
+    
+    return significant_drop && falling_trend && negative_roc;
+}
 
 void adc_sync_initial_charging_state(bool charging) {
     if (!adc_initial_sync_done) {
@@ -700,18 +706,12 @@ adc_battery_state_t get_battery_state(void) {
     const uint32_t current_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
     const uint32_t DEBOUNCE_MS = 3000;
     
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     uint32_t voltage_mv = ULP_GET_U32(ulp_last_result);
     uint8_t available = ULP_GET_U32(ulp_cycle_count) > ULP_ADC_HISTORY_SIZE ? ULP_ADC_HISTORY_SIZE : ULP_GET_U32(ulp_cycle_count);
-    #define CRITICAL_LOW 1756
-    #define LOW_LEVEL 1878
-    #define HIGH_LEVEL 2305
 #else
     uint32_t voltage_mv = get_recent_reading(0);
     uint8_t available = adc_ctx.adc_buffer.count;
-    #define CRITICAL_LOW BATTERY_CRITICAL_LOW_MV
-    #define LOW_LEVEL BATTERY_LOW_MV
-    #define HIGH_LEVEL BATTERY_HIGH_MV
 #endif
     adc_analysis_t analysis = analyze_adc_readings(voltage_mv, available);
     
@@ -789,7 +789,7 @@ static adc_analysis_t analyze_adc_readings(uint32_t voltage_mv, uint8_t availabl
     adc_analysis_t result = {0};
     result.filtered_reading = voltage_mv;
 
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
         // Use ULP readings directly
         uint32_t current = ULP_GET_U32(ulp_last_result);
         uint32_t index = ULP_GET_U32(ulp_history_idx);
@@ -797,36 +797,32 @@ static adc_analysis_t analyze_adc_readings(uint32_t voltage_mv, uint8_t availabl
         uint32_t prev1 = ULP_GET_U32(ulp_history[((index - 2 + ULP_ADC_HISTORY_SIZE) % ULP_ADC_HISTORY_SIZE)]);
         uint32_t prev2 = ULP_GET_U32(ulp_history[(index - 4 + ULP_ADC_HISTORY_SIZE) % ULP_ADC_HISTORY_SIZE]);
         DLOG(TAG, "ULP readings: current=%lu, prev1=%lu, prev2=%lu", current, prev1, prev2);
-        #define ULP_TREND_DETECTION_1 22
-        #define ULP_TREND_DETECTION_2 16
 #else
         // Use medium-term trend detection (more stable)
         uint32_t current = get_recent_reading(0);
         uint32_t prev1 = get_recent_reading(1);
-        uint32_t prev2 = get_recent_reading(2);
-        #define ULP_TREND_DETECTION_1 40
-        #define ULP_TREND_DETECTION_2 30
+        uint32_t prev2 = get_recent_reading(2);s
 #endif
 
-    if (available >= 4) {
+    if (available >= trend_detection[1].readings) {
         
         // Use medium-term rate of change (more stable)
         result.rate_of_change = (int32_t)current - (int32_t)prev2;
         
         // FIXED: More conservative trend detection
-        if (result.rate_of_change > ULP_TREND_DETECTION_1) {
+        if (result.rate_of_change > trend_detection[1].threshold) {
             result.trend = TREND_RISING;
-        } else if (result.rate_of_change < -(ULP_TREND_DETECTION_1)) {
+        } else if (result.rate_of_change < -(trend_detection[1].threshold)) {
             result.trend = TREND_FALLING;
         } else {
             result.trend = TREND_STABLE;
         }
-        
-    } else if (available >= 2) {
+
+    } else if (available >= trend_detection[0].readings) {
         // Basic for small buffers
         result.rate_of_change = (int32_t)current - (int32_t)prev1;
-        result.trend = (result.rate_of_change > ULP_TREND_DETECTION_2) ? TREND_RISING :
-                      (result.rate_of_change < -(ULP_TREND_DETECTION_2)) ? TREND_FALLING : TREND_STABLE;
+        result.trend = (result.rate_of_change > trend_detection[0].threshold) ? TREND_RISING :
+                      (result.rate_of_change < -(trend_detection[0].threshold)) ? TREND_FALLING : TREND_STABLE;
     } else {
         result.trend = TREND_STABLE;
     }
@@ -840,7 +836,7 @@ static adc_analysis_t analyze_adc_readings(uint32_t voltage_mv, uint8_t availabl
  */
 void handle_adc_battery_state(void) {
     adc_battery_state_t new_state = get_battery_state();
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     uint32_t voltage_mv = calibrate_adc_raw(ULP_GET_U32(ulp_last_result));
 #else
     uint32_t voltage_mv = get_recent_reading(0); // Get voltage from buffer
@@ -1015,7 +1011,7 @@ uint8_t calc_bat_perc_v(float adc) {
 //     return bat_perc;
 // }
 
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if !defined(CONFIG_LOGGER_ADC_MODE_ULP)
 static const char * cali_mode = "";
 
 static uint8_t adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle) {
@@ -1077,7 +1073,7 @@ static void adc_calibration_deinit(adc_cali_handle_t handle) {
 static uint32_t adc_read_raw() {
     // esp_err_t err = 0;
     int v = 0;
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
         // ULP mode: Use last ULP reading
         v = calibrate_adc_raw(ULP_GET_U32(ulp_last_result));;
         adc_ctx.adc_raw = v;
@@ -1091,7 +1087,7 @@ static uint32_t adc_read_raw() {
         adc_ctx.adc_raw = v;
 #endif
 #endif
-#if !defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if !defined(CONFIG_LOGGER_ADC_MODE_ULP)
     if (adc_ctx.do_calibration) {
         if(!adc_ctx.adc1_cali_handle || adc_cali_raw_to_voltage(adc_ctx.adc1_cali_handle, adc_ctx.adc_raw, &v)) {
             ELOG(TAG, "[%s] Failed to convert", __func__);
@@ -1106,13 +1102,9 @@ static uint32_t adc_read_raw() {
     return adc_ctx.adc_voltage;
 }
 
-#if !defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if !defined(CONFIG_LOGGER_ADC_MODE_ULP)
 static uint32_t adc_read_count(uint16_t count, uint16_t delay) {
     FUNC_ENTRY(TAG);
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
-        // ULP mode: Use last ULP reading
-        return adc_read_raw() * 100;
-#else
 
     if (count == 0) return 0;
     if (count > 16) count = 16;
@@ -1138,11 +1130,8 @@ static uint32_t adc_read_count(uint16_t count, uint16_t delay) {
         count -= 2;
     }
     return (sum / count) * 100;
-#endif
 }
 #endif
-
-#if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
 
 #if defined(AC_DETECTABLE ) && !(defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3) || defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3_AMOLED))
 static uint8_t result_avg_efficient() {
@@ -1183,7 +1172,7 @@ static void adc_update(void*arg) {
     // Increased sample count and delay to handle rapid voltage fluctuations during charging
     uint32_t reading = 0;
     if(adc_lock(100)) {
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
         reading = adc_read_raw();
 #else
         reading = VOLTAGE_CONV(adc_read_count(11, 5));
@@ -1242,7 +1231,6 @@ static void adc_update(void*arg) {
     }
 #endif
 }
-#endif
 
 uint8_t adc_on_ac() { 
     return last_adc_battery_state == ADC_BATTERY_CHARGING_STARTED ? 1 : 0;
@@ -1296,7 +1284,7 @@ esp_err_t adc_init(void) {
         return ESP_FAIL;
     }
 
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     /* ULP Primary Mode: Use ULP's raw ADC with manual voltage conversion */
     /* Note: ULP configures GPIO in RTC mode, which disconnects it from digital ADC */
     /* Therefore, we skip ADC calibration and rely on VOLTAGE_CONV macro instead */
@@ -1448,7 +1436,7 @@ esp_err_t adc_deinit() {
         adc_ctx.adc1_handle = NULL;
     }
 #endif
-#if !defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if !defined(CONFIG_LOGGER_ADC_MODE_ULP)
     if (adc_ctx.do_calibration) {
         adc_ctx.do_calibration = 0;
         if (adc_ctx.adc1_cali_handle) {
@@ -1463,7 +1451,7 @@ esp_err_t adc_deinit() {
 float volt_read(void) {
     FUNC_ENTRY(TAG);
     float voltage = 0;
-#if defined(CONFIG_LOGGER_ADC_USE_ULP_AS_PRIMARY) && defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     /* ========================================================================
      * ULP AS PRIMARY ADC SOURCE MODE
      * ======================================================================== */
@@ -1504,7 +1492,7 @@ float volt_read(void) {
 #elif defined(CONFIG_LOGGER_ADC_MODE_CONTINUOUS)
     voltage = VOLTAGE_U32_TO_V((VOLTAGE_CONV((float)VOLTAGE_CONV_12(adc_ctx.adc_raw))));
 #endif 
-#endif   
+#endif
     // Additional validation for shared pin scenarios  
 #if (defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3) || defined(CONFIG_HAS_BOARD_LILYGO_T_DISPLAY_S3_AMOLED))
     voltage = validate_and_clamp_voltage(voltage, true);

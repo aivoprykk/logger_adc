@@ -56,7 +56,7 @@
 #define ADC_ULP_ADC_WAKE_REASONS_ENUM(l, m) ULP_D_ADC_WAKE_##l = m,
 #define ADC_ULP_BUTTON_WAKE_REASONS_ENUM(l, m) ULP_D_BUTTON_WAKE_##l = m,
 
-#define ULP_ADC_HISTORY_SIZE 8 // Must be power of 2: 2, 4, or 8 (reduced to 4 to save ULP RAM)
+#define ULP_ADC_HISTORY_SIZE 16 // Must be power of 2: 2, 4, or 8 (reduced to 4 to save ULP RAM)
 
 #if (ULP_ADC_HISTORY_SIZE == 16)
 #define ULP_ADC_HISTORY_SHIFT 4

@@ -154,6 +154,8 @@ static void post_battery_state_event(adc_battery_state_t state, const char* sour
 
 bool adc_ulp_same_adc_wake_reason(void);
 
+uint32_t compute_ulp_history_mad(void);
+
 #ifdef __cplusplus
 }
 #endif

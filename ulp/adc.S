@@ -149,7 +149,7 @@ button_check:
     
     /* Store raw button state for debugging */
     move r2, button_last_result    /* r2 = address of button_last_result */
-    st r0, r2, 0                   /* Store GPIO state (r0 from READ_RTC_REG) */
+    st r1, r2, 0                   /* Store GPIO state (r1 from READ_RTC_REG) */
 
     /* Check if button is pressed (GPIO = 0 with pull-up) */
     jump button_pressed, eq       /* If r0 == 0, button is pressed */

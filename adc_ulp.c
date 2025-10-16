@@ -566,6 +566,23 @@ void debug_ulp_status(void) {
 #endif
 }
 
+/* Helper: compute Mean Absolute Deviation (MAD) of ULP history (raw units) */
+uint32_t compute_ulp_history_mad(void) {
+    uint32_t history_avg = 0;
+    for (uint8_t i = 0; i < ULP_ADC_HISTORY_SIZE; i++) {
+        history_avg += (ULP_GET_ARR_U32(ulp_history, i) & 0xFFF);
+    }
+    history_avg /= ULP_ADC_HISTORY_SIZE;
+
+    uint32_t mad = 0;
+    for (uint8_t i = 0; i < ULP_ADC_HISTORY_SIZE; i++) {
+        uint32_t v = (ULP_GET_ARR_U32(ulp_history, i) & 0xFFF);
+        mad += (v > history_avg) ? (v - history_avg) : (history_avg - v);
+    }
+    mad /= ULP_ADC_HISTORY_SIZE;
+    return mad;
+}
+
 /**
  * Get battery state using ULP variables when waking from ULP sleep
  * This function analyzes ULP ADC results to determine what triggered the wakeup

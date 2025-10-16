@@ -7,6 +7,7 @@ menu "Logger ADC Module Options"
     if LOGGER_ADC_ENABLED
     choice 
         bool "ADC mode"
+        default LOGGER_ADC_MODE_ULP if ULP_BATTERY_MONITORING_ENABLED
         default LOGGER_ADC_MODE_ONESHOT
         help
             Specify the ADC mode to use.
@@ -14,6 +15,14 @@ menu "Logger ADC Module Options"
             bool "Continuous mode"
         config LOGGER_ADC_MODE_ONESHOT
             bool "One-shot mode"
+        if ULP_BATTERY_MONITORING_ENABLED
+        config LOGGER_ADC_MODE_ULP
+            bool "ULP coprocessor mode"
+            help
+                Use ULP coprocessor to read ADC values in low power mode.
+                This mode is suitable for battery-powered applications where
+                power consumption needs to be minimized.
+        endif
     endchoice
     config ADC_UNIT
         int "ADC unit (1 or 2)"
@@ -120,6 +129,7 @@ menu "Logger ADC Module Options"
         default 5 if LOGGER_ADC_LOG_LEVEL_NONE
 
     menu "ULP Sensor Monitoring"
+        if ULP_COPROC_ENABLED
         config ULP_BATTERY_MONITORING_ENABLED
             bool "Enable ULP battery voltage monitoring"
             default y
@@ -129,20 +139,6 @@ menu "Logger ADC Module Options"
                 Note: Ensure a voltage divider is connected to the selected ADC channel
                 to step down battery voltage within ADC input range.
         
-        config LOGGER_ADC_USE_ULP_AS_PRIMARY
-            bool "Use ULP as primary battery ADC source"
-            depends on ULP_BATTERY_MONITORING_ENABLED
-            default y
-            help
-                When enabled, ULP coprocessor readings are used as the primary battery 
-                voltage source. Regular ADC readings are disabled to save power.
-                
-                Benefits:
-                - Lower power consumption (ULP runs during deep sleep)
-                - Continuous monitoring without waking main CPU
-                - Faster wake-up response to battery events
-                
-                Disable this to use regular ADC as primary source (ULP only for wake events).
         config ULP_BUTTON_ENABLED
             bool "Enable ULP button monitoring"
             default y
@@ -156,7 +152,7 @@ menu "Logger ADC Module Options"
             int "Button GPIO number"
             depends on ULP_BUTTON_ENABLED
             range 0 39
-            default 39
+            default 0
             help
                 GPIO number for the button (must be RTC GPIO).
                 NOTE: This should match LOGGER_BUTTON_GPIO_0 in logger_button module
@@ -211,6 +207,7 @@ menu "Logger ADC Module Options"
             help
                 Time between ULP wake cycles in milliseconds.
                 Affects button responsiveness and power consumption.
+        endif
     endmenu
     endif
 endmenu
