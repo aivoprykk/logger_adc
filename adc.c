@@ -58,6 +58,18 @@ static volatile bool adc_lcd_charge_notification = false;
 // Flag to force instant voltage reading after CHARGE_STOPPED event
 static volatile bool force_instant_voltage = false;
 
+/* Adaptive detection tunables */
+/* Reduced multiplier to make dynamic threshold more sensitive in noisy conditions */
+#define ADC_NOISE_MULTIPLIER     2   /* multiplier for MAD -> dynamic threshold (was 3) */
+/* Require fewer consecutive confirmations to be more responsive in practice */
+#define ADC_CONSEC_REQUIRED      1   /* require N consecutive detections to confirm (was 2) */
+
+/* Consecutive confirmation counters (awake CPU-side) */
+static uint8_t adc_consec_up = 0;
+static uint8_t adc_consec_down = 0;
+static int32_t adc_cumulative_positive = 0;
+static uint32_t adc_cumulative_start_ms = 0;
+
 ESP_EVENT_DEFINE_BASE(ADC_EVENT);
 
 /* Battery monitoring integration with main application */
@@ -575,6 +587,8 @@ typedef struct {
     bool is_stable;              // Reading is stable
     int32_t rate_of_change;      // mV/reading trend
     bool is_charging_event;      // Potential charge state change
+    uint32_t noise_mad;          // Mean Absolute Deviation of recent readings (raw units)
+    uint32_t dyn_threshold;      // Dynamic threshold (raw units)
 } adc_analysis_t;
 
 /**
@@ -738,12 +752,35 @@ adc_battery_state_t get_battery_state(void) {
         // --- CHARGING STARTED DETECTION ---
         if (!is_charging) {
             bool charge_start_detected = detect_charge_start(voltage_mv, analysis);
-            if (charge_start_detected) {
+            /* Also consider adaptive dynamic threshold (analysis.dyn_threshold).
+             * Rate-of-change is in raw units; require consecutive confirmations to avoid flapping.
+             */
+            /* Use a slightly scaled dyn threshold (75%) to detect earlier while
+             * still basing the value on measured noise. This helps avoid missing
+             * short but real charge events when MAD is slightly inflated.
+             */
+            uint32_t scaled_dyn_thr = (analysis.dyn_threshold * 3) / 4; // 75%
+            bool dyn_rise = (analysis.rate_of_change >= (int32_t)scaled_dyn_thr);
+
+            if (charge_start_detected || dyn_rise) {
+                adc_consec_up++;
+                adc_consec_down = 0;
+                DLOG(TAG, "dyn_start candidate: roc=%ld dyn=%lu scaled=%lu mad=%lu consec_up=%u",
+                     analysis.rate_of_change, (unsigned long)analysis.dyn_threshold, (unsigned long)scaled_dyn_thr,
+                     (unsigned long)analysis.noise_mad, adc_consec_up);
+            } else {
+                if (adc_consec_up != 0) DLOG(TAG, "reset consec_up (was %u)", adc_consec_up);
+                adc_consec_up = 0;
+            }
+
+            if (adc_consec_up >= ADC_CONSEC_REQUIRED) {
                 is_charging = true;
+                adc_consec_up = 0;
+                adc_consec_down = 0;
                 last_charge_change_ms = current_ms;
-                // charge_start_voltage = voltage_mv;
                 charge_peak_voltage = voltage_mv;
-                ILOG(TAG, "CHARGING STARTED: %lu mV (+%ld mV)", voltage_mv, analysis.rate_of_change);
+                ILOG(TAG, "CHARGING STARTED (confirmed): %lu mV (+%ld), dyn_thr=%lu, mad=%lu",
+                     voltage_mv, analysis.rate_of_change, (unsigned long)analysis.dyn_threshold, (unsigned long)analysis.noise_mad);
                 return ADC_BATTERY_CHARGING_STARTED;
             }
         }
@@ -751,15 +788,31 @@ adc_battery_state_t get_battery_state(void) {
         // --- CHARGING STOPPED DETECTION ---
         if (is_charging) {
             bool charge_stop_detected = detect_charge_stop(voltage_mv, analysis, charge_peak_voltage);
-            if (charge_stop_detected) {
+            /* Consider dynamic threshold for falling edge as well. Use scaled version (75%). */
+            uint32_t scaled_dyn_thr_f = (analysis.dyn_threshold * 3) / 4; // 75%
+            bool dyn_fall = (analysis.rate_of_change <= -(int32_t)scaled_dyn_thr_f);
+
+            if (charge_stop_detected || dyn_fall) {
+                adc_consec_down++;
+                adc_consec_up = 0;
+                DLOG(TAG, "dyn_stop candidate: roc=%ld dyn=%lu scaled=%lu mad=%lu consec_down=%u",
+                     analysis.rate_of_change, (unsigned long)analysis.dyn_threshold, (unsigned long)scaled_dyn_thr_f,
+                     (unsigned long)analysis.noise_mad, adc_consec_down);
+            } else {
+                if (adc_consec_down != 0) DLOG(TAG, "reset consec_down (was %u)", adc_consec_down);
+                adc_consec_down = 0;
+            }
+
+            if (adc_consec_down >= ADC_CONSEC_REQUIRED) {
                 is_charging = false;
+                adc_consec_down = 0;
+                adc_consec_up = 0;
                 last_charge_change_ms = current_ms;
-                // charge_start_voltage = 0;
                 charge_peak_voltage = 0;
-                ILOG(TAG, "CHARGING STOPPED: %lu mV (dropped from %lu mV)", voltage_mv, charge_peak_voltage);
+                ILOG(TAG, "CHARGING STOPPED (confirmed): %lu mV", voltage_mv);
                 return ADC_BATTERY_CHARGING_STOPPED;
             }
-            
+
             // Update peak voltage during charging
             if (voltage_mv > charge_peak_voltage) {
                 charge_peak_voltage = voltage_mv;
@@ -775,6 +828,20 @@ adc_battery_state_t get_battery_state(void) {
         if (voltage_mv < LOW_LEVEL) {
             return ADC_BATTERY_LOW;
         } else if (voltage_mv >= HIGH_LEVEL) {
+            /* If voltage is in HIGH range but recent trend indicates a clear rising
+             * rate (based on adaptive dyn threshold), prefer reporting CHARGING_STARTED
+             * so we don't emit Normal->High transitions when the charger was just
+             * connected. This helps UI/logic which expects charge events.
+             */
+            uint32_t scaled_dyn_thr = (analysis.dyn_threshold * 3) / 4; // 75%
+            if (!is_charging && analysis.rate_of_change >= (int32_t)scaled_dyn_thr) {
+                // Treat as charging started
+                is_charging = true;
+                last_charge_change_ms = current_ms;
+                ILOG(TAG, "Voltage in HIGH range and rising -> treat as CHARGING_STARTED: %lu mV (roc=%ld dyn=%lu)",
+                     voltage_mv, analysis.rate_of_change, (unsigned long)analysis.dyn_threshold);
+                return ADC_BATTERY_CHARGING_STARTED;
+            }
             return ADC_BATTERY_HIGH;
         } else {
             return ADC_BATTERY_NORMAL;
@@ -788,20 +855,19 @@ adc_battery_state_t get_battery_state(void) {
 static adc_analysis_t analyze_adc_readings(uint32_t voltage_mv, uint8_t available) {
     adc_analysis_t result = {0};
     result.filtered_reading = voltage_mv;
-
 #if defined(CONFIG_LOGGER_ADC_MODE_ULP)
-        // Use ULP readings directly
-        uint32_t current = ULP_GET_U32(ulp_last_result);
-        uint32_t index = ULP_GET_U32(ulp_history_idx);
-        // as it is 125ms interval, use longer-term trend detection
-        uint32_t prev1 = ULP_GET_U32(ulp_history[((index - 2 + ULP_ADC_HISTORY_SIZE) % ULP_ADC_HISTORY_SIZE)]);
-        uint32_t prev2 = ULP_GET_U32(ulp_history[(index - 4 + ULP_ADC_HISTORY_SIZE) % ULP_ADC_HISTORY_SIZE]);
-        DLOG(TAG, "ULP readings: current=%lu, prev1=%lu, prev2=%lu", current, prev1, prev2);
+    // Use ULP readings directly
+    uint32_t current = ULP_GET_U32(ulp_last_result);
+    uint32_t index = ULP_GET_U32(ulp_history_idx);
+    /* as it is 125ms interval (typical), use longer-term trend detection */
+    uint32_t prev1 = ULP_GET_U32(ulp_history[((index - 2 + ULP_ADC_HISTORY_SIZE) % ULP_ADC_HISTORY_SIZE)]);
+    uint32_t prev2 = ULP_GET_U32(ulp_history[(index - 4 + ULP_ADC_HISTORY_SIZE) % ULP_ADC_HISTORY_SIZE]);
+    DLOG(TAG, "ULP readings: current=%lu, prev1=%lu, prev2=%lu", current, prev1, prev2);
 #else
-        // Use medium-term trend detection (more stable)
-        uint32_t current = get_recent_reading(0);
-        uint32_t prev1 = get_recent_reading(1);
-        uint32_t prev2 = get_recent_reading(2);s
+    /* Use medium-term trend detection (more stable) */
+    uint32_t current = get_recent_reading(0);
+    uint32_t prev1 = get_recent_reading(1);
+    uint32_t prev2 = get_recent_reading(2);
 #endif
 
     if (available >= trend_detection[1].readings) {
@@ -826,6 +892,66 @@ static adc_analysis_t analyze_adc_readings(uint32_t voltage_mv, uint8_t availabl
     } else {
         result.trend = TREND_STABLE;
     }
+
+    /* Compute noise MAD and dynamic threshold (raw units) using available history samples */
+    uint32_t hist_sum = 0;
+    uint8_t hist_count = 0;
+    uint32_t mad = 0;
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
+    /* Use ULP-maintained cycle_count to determine available history samples */
+    uint32_t cycle_cnt = ULP_GET_U32(ulp_cycle_count);
+    hist_count = (cycle_cnt > ULP_ADC_HISTORY_SIZE) ? ULP_ADC_HISTORY_SIZE : (uint8_t)cycle_cnt;
+    if (hist_count == 0) hist_count = 1;
+
+    /* If we have a full ULP history and the helper is available, use it to avoid duplicating code */
+#if defined(CONFIG_ULP_COPROC_ENABLED)
+    if (hist_count == ULP_ADC_HISTORY_SIZE) {
+        mad = compute_ulp_history_mad();
+        /* Use ULP running_sum to compute average when needed for diagnostics */
+        uint32_t raw_sum = ULP_GET_U32(ulp_running_sum);
+        hist_sum = raw_sum;
+    } else {
+        for (uint8_t i = 0; i < hist_count; i++) {
+            hist_sum += (ULP_GET_ARR_U32(ulp_history, i) & 0xFFF);
+        }
+        uint32_t hist_avg = hist_sum / hist_count;
+        for (uint8_t i = 0; i < hist_count; i++) {
+            uint32_t v = (ULP_GET_ARR_U32(ulp_history, i) & 0xFFF);
+            mad += (v > hist_avg) ? (v - hist_avg) : (hist_avg - v);
+        }
+        mad /= hist_count;
+    }
+#else
+    /* Fallback: compute MAD inline if ULP helper isn't available */
+    for (uint8_t i = 0; i < hist_count; i++) {
+        hist_sum += (ULP_GET_ARR_U32(ulp_history, i) & 0xFFF);
+    }
+    uint32_t hist_avg = hist_sum / hist_count;
+    for (uint8_t i = 0; i < hist_count; i++) {
+        uint32_t v = (ULP_GET_ARR_U32(ulp_history, i) & 0xFFF);
+        mad += (v > hist_avg) ? (v - hist_avg) : (hist_avg - v);
+    }
+    mad /= hist_count;
+#endif
+#else
+    /* Non-ULP modes: compute over available recent readings */
+    hist_count = (available == 0) ? 1 : available;
+    for (uint8_t i = 0; i < hist_count; i++) {
+        hist_sum += get_recent_reading(i);
+    }
+    uint32_t hist_avg = hist_sum / hist_count;
+    for (uint8_t i = 0; i < hist_count; i++) {
+        uint32_t v = get_recent_reading(i);
+        mad += (v > hist_avg) ? (v - hist_avg) : (hist_avg - v);
+    }
+    mad /= hist_count;
+#endif
+
+    result.noise_mad = mad;
+    uint32_t dyn_thr = ADC_RAPID_CHANGE_TRESHOLD;
+    uint32_t cand = mad * ADC_NOISE_MULTIPLIER;
+    if (cand > dyn_thr) dyn_thr = cand;
+    result.dyn_threshold = dyn_thr;
     
     return result;
 }

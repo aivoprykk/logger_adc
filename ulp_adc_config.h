@@ -84,8 +84,8 @@
 #define ADC_HIGH_TRESHOLD   3000
 
 /* Rapid change threshold - wake up if voltage changes by more than this amount
- * between consecutive measurements (in ADC units, ~120 = ~0.08V change) */
-#define ADC_RAPID_CHANGE_TRESHOLD   120
+ * between consecutive measurements (in ADC units, ~110 = ~0.08V change) */
+#define ADC_RAPID_CHANGE_TRESHOLD   110
 
 #define VOLTAGE_MAX 4200UL
 #define VOLTAGE_MIN 3200UL
