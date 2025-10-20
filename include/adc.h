@@ -62,17 +62,19 @@ typedef enum {
 } adc_ulp_wake_source_t;
 
 /* String arrays for enums (for debugging) */
-extern const char* adc_battery_states_str[];
-extern const char* adc_ulp_wake_sources_str[];
-extern const char* adc_ulp_adc_wake_reasons_str[];
-extern const char* adc_ulp_button_wake_reasons_str[];
+const char* adc_battery_states_str(int i);
+const char* adc_ulp_wake_sources_str(int i);
+const char* adc_ulp_adc_wake_reasons_str(int i);
+const char* adc_ulp_button_wake_reasons_str(int i);
 
 /* Main ADC functions */
 int adc_init();
 int adc_deinit();
-float volt_read();
 uint8_t calc_bat_perc_v(float adc);
 uint8_t adc_on_ac();
+
+float adc_get_cached_batt_volt();
+uint32_t adc_get_cached_batt_mv(void);
 
 // bool validate_adc_reading(float voltage);         /* Check if voltage reading is plausible */
 // float get_safe_battery_voltage(void);             /* Get validated voltage with conflict handling */
@@ -80,17 +82,16 @@ uint8_t adc_on_ac();
 // float get_battery_voltage_compensated(void);      /* Get battery voltage compensated for charging */
 // adc_battery_state_t get_battery_state(void);
 /* Optimized display functions */
-float adc_raw_to_voltage(uint32_t raw_adc_value); /* Convert raw ADC to calibrated voltage */
-void get_battery_voltage_for_display(uint32_t raw_adc_value, float fallback_voltage, float *voltage_out); /* Optimized for display updates - uses reference */
+void get_battery_voltage_for_display(float *voltage_out); /* Optimized for display updates - uses reference */
 void adc_sync_initial_charging_state(bool charging);
 adc_battery_state_t get_adc_state(void);
 bool get_adc_charging_state(void);                   /* Get current charging state - single source of truth */
 bool adc_check_and_clear_lcd_charge_flag(void);     /* Check and clear LCD charge notification flag */
 
 /* Battery monitoring and safety functions - managed by ADC module */
-bool adc_check_battery_level(float minimum_voltage);  /* Check if battery is above minimum - thread safe */
+bool adc_check_battery_level(void);  /* Check if battery is above minimum - thread safe */
 void adc_set_low_battery_callback(void (*callback)(void)); /* Set callback for low battery detection */
-void adc_set_minimum_battery_voltage(float voltage); /* Set minimum battery voltage threshold */
+// void adc_set_minimum_battery_voltage(float voltage); /* Set minimum battery voltage threshold */
 
 /* ADC event suppression functions - prevent false events during system transitions */
 void adc_suppress_events(const char* reason);       /* Suppress ADC events with reason logging */

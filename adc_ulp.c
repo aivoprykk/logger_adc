@@ -1,6 +1,6 @@
 #include "adc_private.h"
 
-#if defined(CONFIG_ULP_COPROC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
 
 #include "soc/rtc_cntl_reg.h"
 #include "soc/rtc.h"
@@ -17,6 +17,26 @@
 static const char *TAG = "adc_ulp";
 RTC_DATA_ATTR bool ulp_initialized = false;
 RTC_DATA_ATTR bool ulp_adc_initialized = false;
+
+/* ULP snapshot symbols (defined in ULP RTC fast memory by adc.S)
+ * The ULP build embeds these labels and the component tooling exposes them
+ * to the main firmware with an "ulp_" prefix (e.g. running_sum -> ulp_running_sum).
+ * Use the ulp_snapshot_* names here so the C linker sees the symbols. */
+extern uint32_t ulp_snapshot_valid;
+extern uint32_t ulp_snapshot_running_sum;
+extern uint32_t ulp_snapshot_history_idx;
+extern uint32_t ulp_snapshot_cycle_count;
+extern uint32_t ulp_snapshot_last_result;
+extern uint32_t ulp_snapshot_mad;
+extern uint32_t ulp_snapshot_state;
+
+/* ULP memory is 32-bit word addressed - all variables are uint32_t */
+/* For small values, only lower bits are used */
+extern uint32_t ulp_curr_wake_status;  /* Packed: bits 0-1=source, 2-4=adc, 5-7=button */
+extern uint32_t ulp_last_wake_status;  /* Packed: bits 0-1=source, 2-4=adc, 5-7=button */
+extern uint32_t ulp_entry;
+
+extern uint32_t ulp_low_threshold;
 
 /* ULP binary references */
 extern const uint8_t ulp_battery_bin_start[] asm("_binary_ulp_battery_bin_start");
@@ -122,6 +142,121 @@ void adc_ulp_uninit_pins(void)
 #ifdef CONFIG_ULP_BUTTON_ENABLED
     adc_ulp_uninit_pin(CONFIG_ULP_BUTTON_GPIO);
 #endif
+}
+
+/**
+ * Read ULP snapshot if present and consume it (clear valid flag).
+ * Returns true if snapshot was present and filled into out params.
+ */
+static bool ulp_snapshot_read_and_consume_full(uint32_t *running_sum_out,
+                                               uint32_t *history_idx_out,
+                                               uint32_t *cycle_count_out,
+                                               uint32_t *last_result_out,
+                                               uint32_t *mad_out,
+                                               uint32_t *state_out)
+{
+    // FUNC_ENTRY(TAG);
+    if (!running_sum_out || !history_idx_out || !cycle_count_out || !last_result_out) return false;
+    /* mad_out and state_out are optional (may be NULL) */
+    uint32_t valid = ULP_GET_U32(ulp_snapshot_valid);
+    if (valid == 0) return false;
+    /* Read snapshot fields (ULP wrote these before halting) */
+        *running_sum_out = ULP_GET_U32(ulp_snapshot_running_sum);
+        *history_idx_out = ULP_GET_U32(ulp_snapshot_history_idx);
+        *cycle_count_out = ULP_GET_U32(ulp_snapshot_cycle_count);
+        *last_result_out = ULP_GET_U32(ulp_snapshot_last_result) & 0xFFF;
+        if (mad_out) {
+            *mad_out = ULP_GET_U32(ulp_snapshot_mad) & 0xFFFF; /* ULP writes MAD in lower 16 bits */
+        }
+        if (state_out) {
+            *state_out = ULP_GET_U32(ulp_snapshot_state) & 0xFF; /* small enum in lower 8 bits */
+    }
+    /* Consume snapshot so next wake won't reuse stale data */
+    ULP_SET_U32(ulp_snapshot_valid, 0);
+    FUNC_ENTRY_ARGSD(TAG, "ULP snapshot taken, cycle_count: %lu, last_result: %lu ", *cycle_count_out, *last_result_out);
+    return true;
+}
+
+/* Backward-compatible wrapper: original callers expect 4 args. */
+static bool ulp_snapshot_read_and_consume(uint32_t *running_sum_out,
+                                         uint32_t *history_idx_out,
+                                         uint32_t *cycle_count_out,
+                                         uint32_t *last_result_out)
+{
+    return ulp_snapshot_read_and_consume_full(running_sum_out, history_idx_out, cycle_count_out, last_result_out, NULL, NULL);
+}
+
+RTC_DATA_ATTR static uint32_t rtc_stored_low_raw = 0;     // persists across deep-sleep (but NOT power-off)
+RTC_DATA_ATTR static uint32_t rtc_stored_high_raw = 0;    // for hysteresis (clear threshold)
+
+/* Conversion wrapper: converts raw->mV using either adc_cali or legacy esp_adc_cal */
+esp_err_t raw_to_mv_wrapper(int raw, uint32_t *voltage_mv)
+{
+    if (adc_ctx.do_calibration) {
+        int tmp = 0;
+        esp_err_t ret = adc_cali_raw_to_voltage(adc_ctx.cali_handle, raw, &tmp);
+        if (ret == ESP_OK && voltage_mv) {
+            *voltage_mv = (uint32_t)tmp;
+        }
+        return ret;
+    }
+    return ESP_ERR_INVALID_STATE;
+}
+
+static uint32_t find_raw_for_pin_mv(uint32_t pin_mv)
+{
+    uint32_t lo = 0;
+    uint32_t hi = ADC_MAX_RAW;
+    while (lo < hi) {
+        uint32_t mid = (lo + hi) >> 1;
+        uint32_t mv = 0;
+        if (raw_to_mv_wrapper((int)mid, &mv) != ESP_OK) {
+            // fallback: treat unknown as using linear scaling with DEFAULT_VREF to avoid infinite loop
+            mv = (uint32_t)((uint64_t)mid * DEFAULT_VREF / ADC_MAX_RAW);
+        }
+        if (mv < pin_mv) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    DLOG(TAG, "Mapped pin voltage %lu mV to raw %lu", pin_mv, lo);
+    return lo;
+}
+
+static void compute_and_store_ulp_thresholds(uint32_t desired_batt_mv)
+{
+    FUNC_ENTRY(TAG);
+    if (adc_calibration_init(_ADC_UNIT_0, _ADC_CHANNEL_0, _ADC_ATTEN)) {
+        // 2) Compute adc pin voltage (after divider)
+        // In your repo: HIGH_RESISTOR, LOW_RESISTOR (both in ohms)
+        uint32_t vpin_mv = VOLTAGE_CONV_MV_TO_ADC_ULL(desired_batt_mv);
+
+        // 3) find the raw ADC value that maps to vpin_mv
+        uint32_t raw_thresh = find_raw_for_pin_mv(vpin_mv);
+
+        // 4) compute hysteresis/clear threshold (example: 5% above)
+        uint32_t raw_clear = raw_thresh + (raw_thresh * HYSTERESIS_PERCENT) / 100;
+        if (raw_clear > ADC_MAX_RAW) raw_clear = ADC_MAX_RAW;
+
+        // 5) persist in RTC slow memory so it survives deep-sleep (use NVS if you need across power cycles)
+        rtc_stored_low_raw = raw_thresh;
+        rtc_stored_high_raw = raw_clear;
+
+        if (raw_thresh == 0 || raw_thresh >= ADC_MAX_RAW) {
+            ULP_SET_U32(ulp_low_threshold, ADC_LOW_THRESHOLD);
+            goto err;
+        } else {
+            ULP_SET_U32(ulp_low_threshold, (raw_thresh));
+        }
+        // 6) ALSO write into ULP RAM symbol before starting ULP (see next snippet)
+        ILOG(TAG, "Computed ULP low threshold: %lu (%lu) -> raw %lu (clear at %lu)", vpin_mv, desired_batt_mv, raw_thresh, raw_clear);
+        // adc_calibration_deinit();
+    } else {
+        err:
+        ELOG(TAG, "ADC calibration handle not available, cannot compute ULP thresholds - using compile-time threshold");
+        ULP_SET_U32(ulp_low_threshold, ADC_LOW_THRESHOLD);
+    }
 }
 
 /**
@@ -249,6 +384,8 @@ esp_err_t init_ulp_program(void) {
         ELOG(TAG, "Failed to load ULP program: %s", esp_err_to_name(err));
         return err;
     }
+
+    compute_and_store_ulp_thresholds(BATTERY_CRITICAL_LOW_MV);
     
     /* First boot: initialize last_wake_status to 0 (no previous wake) */
     ULP_SET_U32(ulp_last_wake_status, 0);
@@ -256,14 +393,11 @@ esp_err_t init_ulp_program(void) {
     ulp_initialized = true;
     ILOG(TAG, "ULP program loaded (%u bytes, %u words), last_wake_status initialized to 0", 
          ulp_prog_size_bytes, ulp_prog_size_words);
-
-#if (C_LOG_LEVEL < 3)
-    printf("Raw ULP variable check (first boot - binary loaded):\n");
-    printf("  Thresholds: low=%d, rapid_change=%d (compile-time constants, no RAM used)\n", 
-           ADC_LOW_TRESHOLD, ADC_RAPID_CHANGE_TRESHOLD);
-    printf("  last_result addr=%p, value=0x%08lX (%lu)\n", 
+    DLOG(TAG, "Raw ULP variable check (first boot - binary loaded):");
+    DLOG(TAG, "  Thresholds: low=%lu, rapid_change=%d", 
+           ULP_GET_U32(ulp_low_threshold), ADC_RAPID_CHANGE_THRESHOLD);
+    DLOG(TAG, "  last_result addr=%p, value=0x%08lX (%lu)", 
             &ulp_last_result, ULP_GET_U32(ulp_last_result), ULP_GET_U32(ulp_last_result));
-#endif
     
     return ESP_OK;
 }
@@ -271,14 +405,22 @@ esp_err_t init_ulp_program(void) {
 void start_ulp_program(void)
 {
     FUNC_ENTRY(TAG);
-    
+    /* Clear any stale ULP snapshot at start to avoid misinterpreting old data */
+    ULP_SET_U32(ulp_snapshot_valid, 0);
+    ULP_SET_U32(ulp_snapshot_running_sum, 0);
+    ULP_SET_U32(ulp_snapshot_history_idx, 0);
+    ULP_SET_U32(ulp_snapshot_cycle_count, 0);
+    ULP_SET_U32(ulp_snapshot_last_result, 0);
+    ULP_SET_U32(ulp_snapshot_mad, 0);
+    ULP_SET_U32(ulp_snapshot_state, 0);
+
     ILOG(TAG, "Starting ULP program (fresh sleep - clearing ADC history)...");
     
     /* Note: init_ulp_program() is now called in wakeup_init() at boot, not here.
      * This ensures ULP binary is loaded before any sleep operations. */
-    
+    // adc_calibration_init(_ADC_UNIT_0, _ADC_CHANNEL_0, _ADC_ATTEN);
     init_ulp_adc();      // Initialize ULP ADC hardware (with locking)
-    rtc_clk_slow_freq_set(RTC_SLOW_FREQ_RTC);
+    // rtc_clk_slow_freq_set(RTC_SLOW_FREQ_RTC);
     vTaskDelay(pdMS_TO_TICKS(50));
 
     /* Clear current wake status and ADC history for fresh sleep cycle.
@@ -311,7 +453,7 @@ void start_ulp_program(void)
      * ULP cycle time is 125ms (configured in adc.S), so set wakeup period to match.
      * Note: The ULP assembly has internal wait loops, but this timer is what triggers
      * the ULP to run during deep sleep. Without this, ULP only runs while CPU is awake! */
-    ulp_set_wakeup_period(0, 125000);  /* 125ms = 125000 microseconds */
+    ulp_set_wakeup_period(0, TO_K_UL(ULP_CYCLE_TIME_MS));  /* 125ms = 125000 microseconds */
     
     /* Start the program */
     uint32_t cycle_before = ULP_GET_U32(ulp_cycle_count);
@@ -324,17 +466,15 @@ void start_ulp_program(void)
     }
     
     /* Give ULP time to start and increment cycle_count (one cycle = ~125ms, but may start immediately) */
-    vTaskDelay(pdMS_TO_TICKS(200));
+    vTaskDelay(pdMS_TO_TICKS(ULP_CYCLE_TIME_MS));
     uint32_t cycle_after = ULP_GET_U32(ulp_cycle_count);
-    
     ILOG(TAG, "ULP program started: cycle_count before=%lu, after_200ms=%lu (delta=%ld)", 
          cycle_before, cycle_after, (int32_t)(cycle_after - cycle_before));
-    
     if (cycle_after == cycle_before) {
         WLOG(TAG, "WARNING: ULP cycle_count did NOT increment after ulp_run() - ULP may not be running!");
     }
     
-#if (C_LOG_LEVEL < 3)
+#if (C_LOG_LEVEL <= LOG_DEBUG_NUM)
     debug_ulp_status();
 #endif
 }
@@ -400,7 +540,7 @@ void resume_ulp_program(void)
         WLOG(TAG, "WARNING: ULP cycle_count did NOT increment after ulp_run() - ULP may not be running!");
     }
     
-#if (C_LOG_LEVEL < 3)
+#if (C_LOG_LEVEL <= LOG_INFO_NUM)
     debug_ulp_status();
 #endif
 }
@@ -448,6 +588,11 @@ void adc_ulp_clear_wake_sources(void) {
     FUNC_ENTRY(TAG);
     ULP_SET_U32(ulp_curr_wake_status, 0);
     // Don't clear last_wake_status here - it's updated on wake based on source
+
+    /* Consume/clear any snapshot written by ULP - CPU is reading wake reason now */
+    ULP_SET_U32(ulp_snapshot_valid, 0);
+    ULP_SET_U32(ulp_snapshot_mad, 0);
+    ULP_SET_U32(ulp_snapshot_state, 0);
 }
 
 /**
@@ -477,17 +622,119 @@ uint8_t adc_ulp_after_wake(void) {
         /* Wake from other source (button/timer) - clear last status */
         ULP_SET_U32(ulp_last_wake_status, 0);
         DLOG(TAG, "Wake from %s: cleared last_wake_status (no ADC wake to compare)",
-             adc_ulp_wake_sources_str[wake_source]);
+             adc_ulp_wake_sources_str(wake_source));
     }
     adc_ulp_uninit_pins();
     return wake_source;
+}
+
+bool ulp_history_snapshot_take(ulp_history_snapshot_t *out, bool compute_mad, int max_retries)
+{
+    if (!out) return false;
+    FUNC_ENTRY_ARGSD(TAG, "Taking ULP history snapshot (compute_mad=%d, max_retries=%d)", compute_mad, max_retries);
+    /* First, attempt to consume a frozen snapshot that the ULP wrote at wake time.
+     * This provides the exact ULP state that triggered the wake. If present,
+     * populate `out` from the snapshot and compute MAD over the preserved history
+     * if requested. If no snapshot is present, fall back to validated live reads
+     * using the existing retry logic. */
+    uint32_t s_running = 0, s_idx = 0, s_cycles = 0, s_last = 0, s_mad = 0, s_state = 0;
+    if (ulp_snapshot_read_and_consume_full(&s_running, &s_idx, &s_cycles, &s_last, &s_mad, &s_state)) {
+        DLOG(TAG, "ULP snapshot consumed successfully");
+        uint32_t valid = (s_cycles < ULP_ADC_HISTORY_SIZE) ? s_cycles : ULP_ADC_HISTORY_SIZE;
+        if (valid == 0) {
+            out->valid_count = 0;
+            out->has_mad = false;
+            return false;
+        }
+        out->running_sum = s_running;
+        out->history_idx = s_idx;
+        out->cycle_count = s_cycles;
+        out->valid_count = valid;
+        if (valid == ULP_ADC_HISTORY_SIZE) {
+            out->history_avg = s_running >> ULP_ADC_HISTORY_SHIFT;
+        } else {
+            out->history_avg = s_running / valid;
+        }
+        out->last_sample = s_last & 0xFFF;
+        /* Snapshot provides ULP-computed MAD/state if ULP was updated to write them.
+         * Prefer ULP's values when available; otherwise compute MAD on CPU if requested. */
+        out->snapshot_state = s_state;
+        out->has_snapshot_state = true; /* snapshot was present and consumed */
+        if (s_mad != 0) {
+            out->mad = s_mad;
+            out->has_mad = true;
+        } else if (compute_mad) {
+            uint32_t oldest = (s_idx + ULP_ADC_HISTORY_SIZE - valid) % ULP_ADC_HISTORY_SIZE;
+            uint32_t mad = 0;
+            for (uint32_t i = 0; i < valid; ++i) {
+                uint32_t v = ULP_GET_ARR_U32(ulp_history, (oldest + i) % ULP_ADC_HISTORY_SIZE) & 0xFFF;
+                mad += (v > out->history_avg) ? (v - out->history_avg) : (out->history_avg - v);
+            }
+            out->mad = mad / valid;
+            out->has_mad = true;
+        } else {
+            out->has_mad = false;
+        }
+        return true;
+    }
+
+    /* No frozen snapshot — perform validated live reads with retry to avoid
+     * cycle_count races when ULP is running. */
+    int tries = 0;
+    uint32_t before_cycle, after_cycle;
+    uint32_t running_sum = 0;
+    uint32_t history_idx = 0;
+
+    do {
+        before_cycle = ULP_GET_U32(ulp_cycle_count);
+        running_sum = ULP_GET_U32(ulp_running_sum);
+        history_idx = ULP_GET_U32(ulp_history_idx);
+        after_cycle = ULP_GET_U32(ulp_cycle_count);
+        tries++;
+    } while ((before_cycle != after_cycle) && (tries < max_retries));
+
+    uint32_t cycle_count = after_cycle;
+    uint32_t valid = (cycle_count < ULP_ADC_HISTORY_SIZE) ? cycle_count : ULP_ADC_HISTORY_SIZE;
+    if (valid == 0) {
+        out->valid_count = 0;
+        out->has_mad = false;
+        return false;
+    }
+
+    out->running_sum = running_sum;
+    out->history_idx = history_idx;
+    out->cycle_count = cycle_count;
+    out->valid_count = valid;
+
+    if (valid == ULP_ADC_HISTORY_SIZE) {
+        out->history_avg = running_sum >> ULP_ADC_HISTORY_SHIFT;
+    } else {
+        out->history_avg = running_sum / valid;
+    }
+
+    uint32_t last_idx = (history_idx == 0) ? (ULP_ADC_HISTORY_SIZE - 1) : (history_idx - 1);
+    out->last_sample = ULP_GET_ARR_U32(ulp_history, last_idx) & 0xFFF;
+
+    if (compute_mad) {
+        uint32_t oldest = (history_idx + ULP_ADC_HISTORY_SIZE - valid) % ULP_ADC_HISTORY_SIZE;
+        uint32_t mad = 0;
+        for (uint32_t i = 0; i < valid; ++i) {
+            uint32_t v = ULP_GET_ARR_U32(ulp_history, (oldest + i) % ULP_ADC_HISTORY_SIZE) & 0xFFF;
+            mad += (v > out->history_avg) ? (v - out->history_avg) : (out->history_avg - v);
+        }
+        out->mad = mad / valid;
+        out->has_mad = true;
+    } else {
+        out->has_mad = false;
+    }
+    return true;
 }
 
 /**
  * Diagnostic function to debug ULP status
  */
 void debug_ulp_status(void) {
-#if (C_LOG_LEVEL < 3)
+#if (C_LOG_LEVEL <= LOG_INFO_NUM)
     if(!ulp_initialized) {
         return;
     }
@@ -500,8 +747,8 @@ void debug_ulp_status(void) {
     // printf("ULP Button vars as uint32: counter=0x%08lX, last=0x%08lX\n",
     //        ulp_button_press_counter, ulp_button_last_result);
 #endif
-    // printf("ULP Thresholds (compile-time constants): Low=%d, Rapid Change=%d\n", 
-    //        ADC_LOW_TRESHOLD, ADC_RAPID_CHANGE_TRESHOLD);
+    printf("ULP Thresholds: Low=%lu, Rapid Change=%d\n", 
+            ULP_GET_U32(ulp_low_threshold), ADC_RAPID_CHANGE_THRESHOLD);
     printf("ULP Cycle Count: %lu\n", ULP_GET_U32(ulp_cycle_count));
 #if defined(CONFIG_ULP_BATTERY_MONITORING_ENABLED)
     printf("ULP Last Result: %lu\n", ULP_GET_U32(ulp_last_result));
@@ -551,13 +798,13 @@ void debug_ulp_status(void) {
     
     printf("ULP Wake Status (hybrid: 2 packed vars, curr=0x%02lX, last=0x%02lX):\n", curr_status & 0xFF, last_status & 0xFF);
     printf("  Current: Source=%s, ADC_reason=%s, Button_reason=%s\n", 
-           adc_ulp_wake_sources_str[curr_source], 
-           adc_ulp_adc_wake_reasons_str[curr_adc], 
-           adc_ulp_button_wake_reasons_str[curr_button]);
+           adc_ulp_wake_sources_str(curr_source), 
+           adc_ulp_adc_wake_reasons_str(curr_adc), 
+           adc_ulp_button_wake_reasons_str(curr_button));
     printf("  Last:    Source=%s, ADC_reason=%s, Button_reason=%s\n", 
-           adc_ulp_wake_sources_str[last_source], 
-           adc_ulp_adc_wake_reasons_str[last_adc], 
-           adc_ulp_button_wake_reasons_str[last_button]);
+           adc_ulp_wake_sources_str(last_source), 
+           adc_ulp_adc_wake_reasons_str(last_adc), 
+           adc_ulp_button_wake_reasons_str(last_button));
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
     printf("  Debug:   Button press in progress: counter=%lu (0=no press, >0=pressing, threshold=%d)\n", 
            ulp_button_press_counter_get(), ULP_LONG_PRESS_CYCLES);
@@ -591,17 +838,28 @@ uint32_t compute_ulp_history_mad(void) {
 adc_battery_state_t get_battery_state_from_ulp(void) {
     FUNC_ENTRY(TAG);
     // Get ULP variables (raw ADC values, not voltage) - 32-bit word access with masking
-    const uint32_t current_result = ULP_GET_U32(ulp_last_result) & 0xFFF;   // 12-bit ADC result (keep mask)
-    const uint32_t low_thr = ADC_LOW_TRESHOLD;         // Low threshold from config
-    // const uint32_t high_thr = ADC_HIGH_TRESHOLD;    // High threshold from config
-    const uint32_t rapid_thr = ADC_RAPID_CHANGE_TRESHOLD;  // Rapid change threshold
+    const uint32_t low_thr = ULP_GET_U32(ulp_low_threshold);         // Low threshold from config
+    // const uint32_t high_thr = ADC_HIGH_THRESHOLD;    // High threshold from config
+    const uint32_t rapid_thr = ADC_RAPID_CHANGE_THRESHOLD;  // Rapid change threshold
 #if defined(CONFIG_ULP_BATTERY_MONITORING_ENABLED)
+    /* Unified snapshot reader: prefer frozen ULP snapshot (exact trigger state)
+     * or validated live reads through ulp_history_snapshot_take(). */
+    adc_snapshot_t snap = {0};
+    bool have_snapshot = adc_snapshot_take(&snap, false, 3);
+    uint32_t current_result = have_snapshot ? snap.last_sample : (ULP_GET_U32(ulp_last_result) & 0xFFF);
+
     uint32_t history_avg = 0; // Previous reading average
-    for (uint8_t i = 0; i < ULP_ADC_HISTORY_SIZE; i++) {
-        history_avg += ULP_GET_ARR_U32(ulp_history, i) & 0xFFF;  // 12-bit ADC results (keep mask)
+    uint32_t valid_count = 0;
+    if (have_snapshot) {
+        history_avg = snap.history_avg;
+        valid_count = snap.valid_count;
+    } else {
+        valid_count = 0;
     }
-    history_avg /= ULP_ADC_HISTORY_SIZE; // Average previous readings
-    const int32_t change = (int32_t)current_result - (int32_t)history_avg;
+    const int32_t change = (valid_count == 0) ? 0 : (int32_t)current_result - (int32_t)history_avg;
+#else
+    const uint32_t current_result = ULP_GET_U32(ulp_last_result) & 0xFFF;   // 12-bit ADC result (keep mask)
+    const int32_t change = 0;
 #endif
     DLOG(TAG, "ULP state analysis: current=%lu, "
 #if defined(CONFIG_ULP_BATTERY_MONITORING_ENABLED)
@@ -631,19 +889,17 @@ adc_battery_state_t get_battery_state_from_ulp(void) {
         if ((change < -rapid_thr) || (change > rapid_thr)) {
             // Determine direction of change for charging detection
             if (change > 0) {  // Significant positive change
-                ILOG(TAG, "ULP: Rapid increase suggests charging started.");
+                ILOG(TAG, "ULP: Rapid increase suggests %s.", adc_battery_states_str(ADC_BATTERY_CHARGING_STARTED));
                 return ADC_BATTERY_CHARGING_STARTED;
             } else if (change < 0) {  // Significant negative change
-                ILOG(TAG, "ULP: Rapid decrease suggests charging stopped.");
+                ILOG(TAG, "ULP: Rapid decrease suggests %s.", adc_battery_states_str(ADC_BATTERY_CHARGING_STOPPED));
                 return ADC_BATTERY_CHARGING_STOPPED;
             }
         }
     }
 #endif
     // Default to normal state - ULP woke us but no specific condition detected
-#if (C_LOG_LEVEL < 3)
     ILOG(TAG, "ULP battery state: normal.");
-#endif
     return ADC_BATTERY_NORMAL;
 }
 

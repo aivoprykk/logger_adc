@@ -53,7 +53,7 @@ For detailed technical documentation, architecture guides, and implementation ex
   - Benefits analysis and migration checklist
   
 - **[REFACTOR_EXAMPLE_volt_read.c](../../doc/development/adc/REFACTOR_EXAMPLE_volt_read.c)** - Working code example
-  - volt_read() dual implementation (ULP primary vs regular ADC)
+  - adc_get_cached_batt_volt() dual implementation (ULP primary vs regular ADC)
   - Helper functions and usage examples
 
 ## License

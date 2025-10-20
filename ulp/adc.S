@@ -9,7 +9,7 @@
 
 /* Configuration from preprocessor flags */
 #if CONFIG_ULP_BUTTON_ENABLED
-.set BUTTON_RTC_IO, CONFIG_ULP_BUTTON_RTC_IO  
+.set BUTTON_RTC_IO, ULP_BUTTON_RTC_IO
 .set LONG_PRESS_THRESHOLD, ULP_LONG_PRESS_CYCLES
 #endif
 
@@ -22,15 +22,18 @@
 .set adc_oversampling_factor_log, ULP_ADC_OVERSAMPLING
 .set adc_oversampling_factor, (1 << adc_oversampling_factor_log)
 
-/* ULP wait uses RTC_FAST_CLK ticks (~8MHz)
-   But wait instruction is limited to 16-bit (max 65535 ticks)
-   For 125ms: need 1,000,000 ticks, so use loop: 16 × 62500 = 1,000,000 */
-.set WAIT_TICKS_PER_ITER, 62500  /* Max safe value < 65536 */
-.set WAIT_ITERATIONS, (8000 * ULP_CYCLE_TIME_MS / WAIT_TICKS_PER_ITER)
+/* Use pre-calculated values
+ * NOTE: the preprocessor may expand symbol names on the left-hand side of
+ * ".set NAME, VALUE" which breaks the ULP assembler if NAME itself is a
+ * macro. Define constant names that are not preprocessor macros and map
+ * them to the preprocessor values on the right-hand side. Use the *_CONST
+ * identifiers in the ULP code below.
+ */
+.set WAIT_TICKS_PER_ITER, ULP_WAIT_TICKS_PER_ITER
+.set WAIT_ITERATIONS, ULP_WAIT_ITERATIONS
 
 /* Compile-time constants - no RAM needed! */
-.set ADC_LOW_THR_VALUE, ADC_LOW_TRESHOLD
-.set ADC_RAPID_CHG_THR_VALUE, ADC_RAPID_CHANGE_TRESHOLD
+.set ADC_RAPID_CHG_THR_VALUE, ADC_RAPID_CHANGE_THRESHOLD
 
 /* Global variables */
 .bss
@@ -44,7 +47,9 @@ curr_wake_status:
 .global last_wake_status
 last_wake_status:
     .long 0  /* Packed: bits 0-1=source, 2-4=adc_reason, 5-7=button_reason */
-
+.global low_threshold
+low_threshold:
+    .long 0
 #if CONFIG_ULP_BUTTON_ENABLED
 .global button_press_counter
 button_press_counter:
@@ -71,6 +76,31 @@ history_idx:
 .global running_sum
 running_sum:
     .long 0  /* 32-bit: full word used (sum can be 4*4095=16380) */
+
+/* Snapshot variables: written by ULP immediately before waking the main CPU
+ * so the CPU can later inspect the exact ULP state that caused the wake.
+ * Only lower 16 bits are used for most fields, snapshot_valid is 0/1. */
+.global snapshot_valid
+snapshot_valid:
+    .long 0
+.global snapshot_running_sum
+snapshot_running_sum:
+    .long 0
+.global snapshot_history_idx
+snapshot_history_idx:
+    .long 0
+.global snapshot_cycle_count
+snapshot_cycle_count:
+    .long 0
+.global snapshot_last_result
+snapshot_last_result:
+    .long 0
+.global snapshot_mad
+snapshot_mad:
+    .long 0
+.global snapshot_state
+snapshot_state:
+    .long 0
 #endif
 
 .global cycle_count
@@ -382,7 +412,8 @@ adc_check_thresholds:
     /* Check last_result < ADC_LOW_THR_VALUE (compile-time constant) */
     move r3, last_result
     ld r0, r3, 0
-    move r1, ADC_LOW_THR_VALUE   /* Direct immediate value, no RAM needed! */
+    move r1, low_threshold   /* Direct immediate value, no RAM needed! */
+    ld r1, r1, 0
     sub r0, r0, r1
     jump adc_low_threshold_triggered, ov
 
@@ -423,8 +454,12 @@ adc_low_set_wake:
     move r2, ULP_WAKE_STATUS_ADC_LOW_THR         /* Auto-generated: (ADC | (LOW_THR << 2)) = 0x05 */
     move r1, curr_wake_status
     st r2, r1, 0
-    
-    jump wake_main_cpu
+
+    /* For low-battery wake we skip MAD computation to save cycles.
+     * Explicitly set snapshot_mad=0 and snapshot_state to LOW_THR. */
+    move r1, 0
+    move r2, ULP_WAKE_STATUS_ADC_LOW_THR
+    jump write_snapshot_and_wake
 
 #if CONFIG_ULP_BATTERY_MONITORING_ENABLED
 adc_rapid_change_triggered:
@@ -455,7 +490,65 @@ adc_rapid_set_wake:
     move r2, ULP_WAKE_STATUS_ADC_RAPID_CHG       /* Auto-generated: (ADC | (RAPID_CHG << 2)) = 0x09 */
     move r1, curr_wake_status
     st r2, r1, 0
-    
+
+    /* Compute MAD over history if buffer is full and set snapshot_state in r2,
+     * put computed MAD in r1 then branch to common writer. */
+    move r1, cycle_count
+    ld r2, r1, 0
+    move r3, ADC_HISTORY_SIZE
+    sub r0, r2, r3
+    /* MAD computation removed for ULP (register/instruction limits). Fall through
+     * to the skip path which writes snapshot_mad=0 and snapshot_state. */
+
+    /* Skip computing MAD on rapid-change too (ULP register and instruction limits).
+     * Set snapshot_mad=0 and set state to RAPID_CHG. CPU will compute MAD if needed. */
+    move r1, 0
+    move r2, ULP_WAKE_STATUS_ADC_RAPID_CHG
+    jump write_snapshot_and_wake
+
+/* Common snapshot writer: expects
+ *  r1 = snapshot_mad (or computed MAD),
+ *  r2 = snapshot_state (ULP wake status)
+ * Writes running_sum/history_idx/cycle_count/last_result, then snapshot_mad/state, then sets snapshot_valid and wakes CPU.
+ */
+write_snapshot_and_wake:
+    /* Use only r0..r3. r1/r2 hold snapshot_mad/snapshot_state on entry. */
+    /* running_sum -> snapshot_running_sum */
+    move r3, running_sum
+    ld r0, r3, 0
+    move r3, snapshot_running_sum
+    st r0, r3, 0
+
+    /* history_idx -> snapshot_history_idx */
+    move r3, history_idx
+    ld r0, r3, 0
+    move r3, snapshot_history_idx
+    st r0, r3, 0
+
+    /* cycle_count -> snapshot_cycle_count */
+    move r3, cycle_count
+    ld r0, r3, 0
+    move r3, snapshot_cycle_count
+    st r0, r3, 0
+
+    /* last_result -> snapshot_last_result */
+    move r3, last_result
+    ld r0, r3, 0
+    move r3, snapshot_last_result
+    st r0, r3, 0
+
+    /* r1 contains MAD (if computed), write it to snapshot_mad */
+    move r3, snapshot_mad
+    st r1, r3, 0
+
+    /* r2 contains the snapshot state enum */
+    move r3, snapshot_state
+    st r2, r3, 0
+
+    move r3, snapshot_valid
+    move r0, 1
+    st r0, r3, 0
+
     jump wake_main_cpu
 #endif
 

@@ -40,8 +40,8 @@ void init_ulp_program(void)
         return;
     }
 
-    ulp_low_thr = EXAMPLE_ADC_LOW_TRESHOLD;
-    ulp_high_thr = EXAMPLE_ADC_HIGH_TRESHOLD;
+    ulp_low_thr = EXAMPLE_ADC_LOW_THRESHOLD;
+    ulp_high_thr = EXAMPLE_ADC_HIGH_THRESHOLD;
 
     /* Set ULP wake up period to 20ms */
     ulp_set_wakeup_period(0, 20000);

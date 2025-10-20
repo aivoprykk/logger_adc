@@ -5,6 +5,84 @@ menu "Logger ADC Module Options"
         help
             Enable logger_adc module.
     if LOGGER_ADC_ENABLED
+    config ADC_CYCLE_TIME_MS
+            int "ADC timer cycle time (milliseconds)"
+            range 20 1000
+            default 250
+            help
+                Time between ADC timer wake cycles in milliseconds.
+                Affects button responsiveness and power consumption.
+    if ULP_COPROC_ENABLED
+    config ULP_BATTERY_MONITORING_ENABLED
+        bool "Enable ULP battery voltage monitoring"
+        default y
+        help
+            Enable ULP coprocessor battery voltage monitoring.
+            Note: Ensure a voltage divider is connected to the selected ADC channel
+            to step down battery voltage within ADC input range.
+
+    config ULP_BUTTON_ENABLED
+        bool "Enable ULP button monitoring"
+        default y
+        help
+            Enable ULP coprocessor button long press monitoring.
+            IMPORTANT: When enabled, ensure ULP_BUTTON_GPIO matches
+            LOGGER_BUTTON_GPIO_0 to monitor the same physical button.
+    if ULP_BUTTON_ENABLED
+    menu "ULP Button Monitoring"
+        config ULP_BUTTON_GPIO
+            int "ULP Button GPIO number"
+            depends on ULP_BUTTON_ENABLED
+            range 0 39
+            default 0
+            help
+                GPIO number for the button (must be RTC GPIO).
+                NOTE: This should match LOGGER_BUTTON_GPIO_0 in logger_button module
+                to monitor the same physical button.
+        config ULP_BUTTON_RTC_IO
+            int
+            depends on ULP_BUTTON_ENABLED
+            range 0 17
+            default 11 if ULP_BUTTON_GPIO = 0
+            default 12 if ULP_BUTTON_GPIO = 2
+            default 10 if ULP_BUTTON_GPIO = 4
+            default 15 if ULP_BUTTON_GPIO = 12
+            default 14 if ULP_BUTTON_GPIO = 13
+            default 16 if ULP_BUTTON_GPIO = 14
+            default 13 if ULP_BUTTON_GPIO = 15
+            default 6 if ULP_BUTTON_GPIO = 25
+            default 7 if ULP_BUTTON_GPIO = 26
+            default 17 if ULP_BUTTON_GPIO = 27
+            default 9 if ULP_BUTTON_GPIO = 32
+            default 8 if ULP_BUTTON_GPIO = 33
+            default 4 if ULP_BUTTON_GPIO = 34
+            default 5 if ULP_BUTTON_GPIO = 35
+            default 0 if ULP_BUTTON_GPIO = 36
+            default 1 if ULP_BUTTON_GPIO = 37
+            default 2 if ULP_BUTTON_GPIO = 38
+            default 3 if ULP_BUTTON_GPIO = 39
+            default 3
+            help
+                RTC IO number corresponding to the button GPIO.
+                This is automatically calculated based on ULP_BUTTON_GPIO.
+                ESP32 GPIO to RTC_IO mapping:
+                GPIO0→RTC_IO11, GPIO2→RTC_IO12, GPIO4→RTC_IO10,
+                GPIO12→RTC_IO15, GPIO13→RTC_IO14, GPIO14→RTC_IO16,
+                GPIO15→RTC_IO13, GPIO25→RTC_IO6, GPIO26→RTC_IO7,
+                GPIO27→RTC_IO17, GPIO32→RTC_IO9, GPIO33→RTC_IO8,
+                GPIO34→RTC_IO4, GPIO35→RTC_IO5, GPIO36→RTC_IO0,
+                GPIO37→RTC_IO1, GPIO38→RTC_IO2, GPIO39→RTC_IO3
+        config ULP_BUTTON_LONG_PRESS_MS
+            int "Long press duration (milliseconds)"
+            depends on ULP_BUTTON_ENABLED
+            range 1000 10000
+            default 2000
+            help
+                Duration in milliseconds for long press detection.
+    endmenu
+    endif
+    endif
+    endif
     choice 
         bool "ADC mode"
         default LOGGER_ADC_MODE_ULP if ULP_BATTERY_MONITORING_ENABLED
@@ -30,6 +108,7 @@ menu "Logger ADC Module Options"
         default 1
         help
             Specify the ADC unit to use.
+    menu "ADC Settings"
     config ADC_CHANNEL
         int "ADC channel (0-9, see help)"
         range 0 9
@@ -101,13 +180,16 @@ menu "Logger ADC Module Options"
         help
             The ADC bit width can be set to 0 (default) or 9-13(bits). 
             The higher the bit width is, the higher the resolution of the ADC will be.
+    endmenu
     choice
-        bool "Default log verbosity"
+        bool "Log verbosity"
         default LOGGER_ADC_LOG_LEVEL_ERROR
         help
             Specify how important log should be added.
         config LOGGER_ADC_LOG_LEVEL_TRACE
-            bool "TRACE: A lot of logs to give detailed information"
+            bool "TRACE: Log more to give detailed information"
+        config LOGGER_ADC_LOG_LEVEL_DEBUG
+            bool "DEBUG: Log general debug info"
         config LOGGER_ADC_LOG_LEVEL_INFO
             bool "INFO: Log important events"
         config LOGGER_ADC_LOG_LEVEL_WARN
@@ -122,92 +204,11 @@ menu "Logger ADC Module Options"
     config LOGGER_ADC_LOG_LEVEL
         int
         default 0 if LOGGER_ADC_LOG_LEVEL_TRACE
-        default 1 if LOGGER_ADC_LOG_LEVEL_INFO
-        default 2 if LOGGER_ADC_LOG_LEVEL_WARN
-        default 3 if LOGGER_ADC_LOG_LEVEL_ERROR
-        default 4 if LOGGER_ADC_LOG_LEVEL_USER
-        default 5 if LOGGER_ADC_LOG_LEVEL_NONE
+        default 1 if LOGGER_ADC_LOG_LEVEL_DEBUG
+        default 2 if LOGGER_ADC_LOG_LEVEL_INFO
+        default 3 if LOGGER_ADC_LOG_LEVEL_WARN
+        default 4 if LOGGER_ADC_LOG_LEVEL_ERROR
+        default 5 if LOGGER_ADC_LOG_LEVEL_USER
+        default 6 if LOGGER_ADC_LOG_LEVEL_NONE
 
-    menu "ULP Sensor Monitoring"
-        if ULP_COPROC_ENABLED
-        config ULP_BATTERY_MONITORING_ENABLED
-            bool "Enable ULP battery voltage monitoring"
-            default y
-            help
-                Enable ULP coprocessor battery voltage monitoring.
-                
-                Note: Ensure a voltage divider is connected to the selected ADC channel
-                to step down battery voltage within ADC input range.
-        
-        config ULP_BUTTON_ENABLED
-            bool "Enable ULP button monitoring"
-            default y
-            help
-                Enable ULP coprocessor button long press monitoring.
-                
-                IMPORTANT: When enabled, ensure ULP_BUTTON_GPIO matches 
-                LOGGER_BUTTON_GPIO_0 to monitor the same physical button.
-                
-        config ULP_BUTTON_GPIO
-            int "Button GPIO number"
-            depends on ULP_BUTTON_ENABLED
-            range 0 39
-            default 0
-            help
-                GPIO number for the button (must be RTC GPIO).
-                NOTE: This should match LOGGER_BUTTON_GPIO_0 in logger_button module
-                to monitor the same physical button.
-                
-        config ULP_BUTTON_RTC_IO
-            int
-            depends on ULP_BUTTON_ENABLED  
-            range 0 17
-            default 11 if ULP_BUTTON_GPIO = 0
-            default 12 if ULP_BUTTON_GPIO = 2
-            default 10 if ULP_BUTTON_GPIO = 4
-            default 15 if ULP_BUTTON_GPIO = 12
-            default 14 if ULP_BUTTON_GPIO = 13
-            default 16 if ULP_BUTTON_GPIO = 14
-            default 13 if ULP_BUTTON_GPIO = 15
-            default 6 if ULP_BUTTON_GPIO = 25
-            default 7 if ULP_BUTTON_GPIO = 26
-            default 17 if ULP_BUTTON_GPIO = 27
-            default 9 if ULP_BUTTON_GPIO = 32
-            default 8 if ULP_BUTTON_GPIO = 33
-            default 4 if ULP_BUTTON_GPIO = 34
-            default 5 if ULP_BUTTON_GPIO = 35
-            default 0 if ULP_BUTTON_GPIO = 36
-            default 1 if ULP_BUTTON_GPIO = 37
-            default 2 if ULP_BUTTON_GPIO = 38
-            default 3 if ULP_BUTTON_GPIO = 39
-            default 3
-            help
-                RTC IO number corresponding to the button GPIO.
-                This is automatically calculated based on ULP_BUTTON_GPIO.
-                ESP32 GPIO to RTC_IO mapping:
-                GPIO0→RTC_IO11, GPIO2→RTC_IO12, GPIO4→RTC_IO10,
-                GPIO12→RTC_IO15, GPIO13→RTC_IO14, GPIO14→RTC_IO16,
-                GPIO15→RTC_IO13, GPIO25→RTC_IO6, GPIO26→RTC_IO7,
-                GPIO27→RTC_IO17, GPIO32→RTC_IO9, GPIO33→RTC_IO8,
-                GPIO34→RTC_IO4, GPIO35→RTC_IO5, GPIO36→RTC_IO0,
-                GPIO37→RTC_IO1, GPIO38→RTC_IO2, GPIO39→RTC_IO3
-                
-        config ULP_BUTTON_LONG_PRESS_MS
-            int "Long press duration (milliseconds)"
-            depends on ULP_BUTTON_ENABLED
-            range 1000 10000
-            default 3000
-            help
-                Duration in milliseconds for long press detection.
-                
-        config ULP_CYCLE_TIME_MS
-            int "ULP cycle time (milliseconds)"
-            range 50 1000
-            default 125
-            help
-                Time between ULP wake cycles in milliseconds.
-                Affects button responsiveness and power consumption.
-        endif
-    endmenu
-    endif
 endmenu

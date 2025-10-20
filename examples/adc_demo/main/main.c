@@ -39,7 +39,7 @@ static void update_bat(void) {
     // Use ULP reading if available (more efficient and survives deep sleep)
     if (!update_rtc_bat_from_ulp()) {
         // Fallback to direct ADC reading if ULP not available
-        rtc_voltage_bat = volt_read();
+        rtc_voltage_bat = adc_get_cached_batt_volt();
 #if defined(CONFIG_ULP_COPROC_ENABLED)
         ESP_LOGD(TAG, "[%s] Using direct ADC reading: %.02fV", __FUNCTION__, rtc_voltage_bat);
 #endif
@@ -68,7 +68,7 @@ void app_main(void)
     while (1) {
 
 #if CONFIG_LOGGER_ADC_ENABLED
-        update_bat();
+        // update_bat();
         vTaskDelay(pdMS_TO_TICKS(1000));
 #else
     /* If user is using USB-serial-jtag then idf monitor needs some time to

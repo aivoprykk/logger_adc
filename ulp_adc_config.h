@@ -66,38 +66,56 @@
 #endif
 #endif
 #define ULP_BUTTON_GPIO        CONFIG_ULP_BUTTON_GPIO
-#define ULP_BUTTON_LONG_PRESS_MS CONFIG_ULP_BUTTON_LONG_PRESS_MS
+/* Button timing calculations - FIXED INTEGER MATH */
+#define ULP_BUTTON_LONG_PRESS_MS  CONFIG_ULP_BUTTON_LONG_PRESS_MS
 #endif
 
-/* Timing Configuration */
-#define ULP_CYCLE_TIME_MS      CONFIG_ULP_CYCLE_TIME_MS
+/* ULP timing calculations */
+#define RTC_FAST_CLK_HZ        8000000UL    /* 8MHz RTC fast clock */
+#define TICKS_PER_MS           (RTC_FAST_CLK_HZ / 1000UL)  /* 8000 ticks/ms */
+#define MAX_WAIT_TICKS         65535UL      /* 16-bit limit for wait instruction */
 
-/* Calculate thresholds based on timing */
-#define ULP_CYCLES_PER_SECOND  (1000 / ULP_CYCLE_TIME_MS)
-#define ULP_LONG_PRESS_CYCLES  ((ULP_BUTTON_LONG_PRESS_MS * ULP_CYCLES_PER_SECOND) / 1000)
+#define ULP_CYCLE_TIME_MS      CONFIG_ADC_CYCLE_TIME_MS
+#define TOTAL_TICKS_NEEDED     (ULP_CYCLE_TIME_MS * TICKS_PER_MS)
+
+/* Calculate optimal wait parameters */
+#if (TOTAL_TICKS_NEEDED <= MAX_WAIT_TICKS)
+    #define ULP_WAIT_TICKS_PER_ITER  TOTAL_TICKS_NEEDED
+    #define ULP_WAIT_ITERATIONS      1
+#else
+    #define ULP_WAIT_ITERATIONS      ((TOTAL_TICKS_NEEDED + MAX_WAIT_TICKS - 1) / MAX_WAIT_TICKS)
+    #define ULP_WAIT_TICKS_PER_ITER  (TOTAL_TICKS_NEEDED / ULP_WAIT_ITERATIONS)
+#endif
+
+#ifdef CONFIG_ULP_BUTTON_ENABLED
+// #define ULP_CYCLES_PER_SECOND  ((1000UL + ULP_CYCLE_TIME_MS - 1) / ULP_CYCLE_TIME_MS)  /* ceil(1000/cycle_ms) */
+/* Calculate long press cycles with proper rounding */
+/* round(ms * cycles/sec / 1000) */
+// #define ULP_LONG_PRESS_CYCLES  ((ULP_BUTTON_LONG_PRESS_MS * ULP_CYCLES_PER_SECOND + 500) / 1000)
+/* Alternative: Direct cycle calculation (more accurate) */
+/* Direct calculation: cycles = ceil(press_time / cycle_time) */
+#define ULP_LONG_PRESS_CYCLES  ((ULP_BUTTON_LONG_PRESS_MS + ULP_CYCLE_TIME_MS - 1) / ULP_CYCLE_TIME_MS)
+#endif
+
+/* Safety Checks */
+#if (WAIT_TICKS_PER_ITER > MAX_WAIT_TICKS)
+    #error "WAIT_TICKS_PER_ITER exceeds 16-bit limit"
+#endif
+
+#if (ULP_LONG_PRESS_CYCLES > 255)
+    #error "ULP_LONG_PRESS_CYCLES too large for 8-bit counter"
+#endif
 
 /* Set low and high thresholds, approx. 3.27V - 4.1V*/
 // high is set to 3000 to avoid false triggering when fully charged, 4.2v is around 2360
-// low is set to 1770 to wake up when battery below 3.20v
-// TODO: 1800 is around 3.4v - can be triggered also to inform low battery
-#define ADC_LOW_TRESHOLD    1770
-#define ADC_HIGH_TRESHOLD   3000
+// low is set to 1795 to wake up when battery below 3.25v
+// TODO: 1795 is around 3.4v - can be triggered also to inform low battery
+#define ADC_LOW_THRESHOLD    1795
+#define ADC_HIGH_THRESHOLD   3000
 
 /* Rapid change threshold - wake up if voltage changes by more than this amount
  * between consecutive measurements (in ADC units, ~110 = ~0.08V change) */
-#define ADC_RAPID_CHANGE_TRESHOLD   110
-
-#define VOLTAGE_MAX 4200UL
-#define VOLTAGE_MIN 3200UL
-#define DEFAULT_VREF 1114UL
-#define HIGH_RESISTOR 100000UL
-#define LOW_RESISTOR 100000UL
-
-#define VOLTAGE_PERC_COEF(a) (float)(1.0f - (float)((VOLTAGE_MAX - (uint32_t)(a)) / (VOLTAGE_MAX - VOLTAGE_MIN)))
-#define VOLTAGE_PERC(a) (100UL * VOLTAGE_PERC_COEF(a))
-#define VOLTAGE_CONV(a) (float)((HIGH_RESISTOR + LOW_RESISTOR) / LOW_RESISTOR * ((uint32_t)(a) / 100UL))
-#define VOLTAGE_CONV_12(a) (float)((a) * 3300UL / 4095UL)
-#define VOLTAGE_U32_TO_V(a) ((float)(a) / 1000.0f)
+#define ADC_RAPID_CHANGE_THRESHOLD   110
 
 /********************************************************************
  * ULP ADC Configuration
@@ -179,6 +197,7 @@
  * Legacy compatibility - for C code that may need ESP-IDF types
  * These are only used in C files, not in ULP assembly
  ********************************************************************/
+#define ULP_BUTTON_RTC_IO  CONFIG_ULP_BUTTON_RTC_IO
 #ifdef __ASSEMBLER__
 /* Assembly code - use our ULP definitions directly */
 #define _ADC_UNIT_0     ULP_ADC_UNIT
