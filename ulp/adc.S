@@ -103,6 +103,36 @@ snapshot_mad:
 snapshot_state:
     .long 0
 #endif
+.global detection_phase
+detection_phase:
+    .long 0  /* 0=idle, 1=waiting confirmation */
+
+.global detection_start_idx  
+detection_start_idx:
+    .long 0  /* history_idx when detection started */
+
+.global baseline_avg
+baseline_avg:
+    .long 0  /* running_avg at detection time */
+
+.global detection_direction
+detection_direction:
+    .long 0  /* 0=fall, 1=rise */
+
+.global snapshot_detection_start_idx
+snapshot_detection_start_idx:
+    .long 0
+
+.global snapshot_baseline_avg
+snapshot_baseline_avg:
+    .long 0
+
+.global snapshot_detection_direction  
+snapshot_detection_direction:
+    .long 0
+
+/* Add threshold constants */
+.set CHARGE_STOP_THRESHOLD, 80  /* ~80mV drop for charge stop detection */
 #endif
 
 .global cycle_count
@@ -361,6 +391,309 @@ adc_read_loop:
     
     jump adc_calc_running_avg
 
+/* Simple voltage-based adaptive thresholds */
+adc_get_simple_adaptive_threshold:
+    move r1, last_result
+    ld r0, r1, 0
+    
+    /* Bucket 1: Very low battery < ~3.6V (raw < 2000) - most sensitive */
+    move r1, 2000  
+    sub r1, r0, r1
+    jump very_sensitive, ov
+    
+    /* Bucket 2: High battery > ~4.1V (raw > 2400) - least sensitive */  
+    move r1, 2400
+    sub r1, r0, r1
+    jump less_sensitive, ov
+    
+    /* Bucket 3: Normal range (default sensitivity) */
+    move r0, ADC_RAPID_CHG_THR_VALUE
+    jump threshold_done
+    
+very_sensitive:
+    move r0, ADC_RAPID_CHG_THR_VALUE
+    rsh r0, r0, 1  /* Divide by 2 */
+    add r0, r0, ADC_RAPID_CHG_THR_VALUE
+    rsh r0, r0, 2  /* Approximately ×0.75 */
+    jump threshold_done
+    
+less_sensitive:
+    move r0, ADC_RAPID_CHG_THR_VALUE
+    lsh r0, r0, 1  /* Multiply by 2 */
+    add r0, r0, ADC_RAPID_CHG_THR_VALUE
+    rsh r0, r0, 2  /* Approximately ×1.25 */
+    
+threshold_done:
+    /* r0 now contains adaptive threshold */
+    /* In ULP, we can't return properly, so caller must handle this */
+    /* We'll use r3 to pass the threshold back */
+    move r3, r0
+    
+    /* Since we can't return, we need to jump back to a known point */
+    /* This is a limitation of ULP - we have to inline or use fixed return points */
+    jump adc_threshold_return
+
+/* Enhanced detection with inline threshold calculation */
+adc_check_rapid_change_enhanced:
+    /* Get running average (baseline) */
+    move r1, running_sum
+    ld r2, r1, 0
+    rsh r2, r2, ULP_ADC_HISTORY_SHIFT  /* baseline_avg */
+    
+    /* Get current reading */
+    move r1, last_result
+    ld r0, r1, 0
+    
+    /* Calculate difference from baseline */
+    sub r1, r0, r2            /* diff = current - baseline_avg */
+    
+    /* === INLINE THRESHOLD CALCULATION === */
+    move r3, last_result
+    ld r0, r3, 0
+    
+    /* Bucket 1: Very low battery */
+    move r3, 2000  
+    sub r3, r0, r3
+    jump threshold_very_sensitive, ov
+    
+    /* Bucket 2: High battery */  
+    move r3, 2400
+    sub r3, r0, r3
+    jump threshold_less_sensitive, ov
+    
+    /* Bucket 3: Normal range */
+    move r3, ADC_RAPID_CHG_THR_VALUE
+    jump threshold_check
+    
+threshold_very_sensitive:
+    move r3, ADC_RAPID_CHG_THR_VALUE
+    rsh r3, r3, 1
+    add r3, r3, ADC_RAPID_CHG_THR_VALUE
+    rsh r3, r3, 2  /* ×0.75 */
+    jump threshold_check
+    
+threshold_less_sensitive:
+    move r3, ADC_RAPID_CHG_THR_VALUE
+    lsh r3, r3, 1
+    add r3, r3, ADC_RAPID_CHG_THR_VALUE
+    rsh r3, r3, 2  /* ×1.25 */
+    
+threshold_check:
+    /* r3 now contains adaptive threshold */
+    /* Continue with detection logic */
+    sub r1, r1, r3
+    jump potential_charge_event, ov  /* If diff >= threshold */
+    
+    jump check_confirmation_phase
+
+adc_threshold_return:
+    /* This is where the threshold function would return to */
+    /* But since we inlined it, we don't need this anymore */
+    jump adc_exit
+
+potential_charge_event:
+    /* === PHASE 1: Detection - save state and take snapshot === */
+    move r1, detection_phase
+    move r2, 1
+    st r2, r1, 0                  /* Set phase = 1 (waiting confirmation) */
+    
+    move r1, detection_start_idx
+    move r2, history_idx
+    ld r2, r2, 0
+    st r2, r1, 0                  /* Save starting index */
+    
+    move r1, baseline_avg
+    move r2, running_sum
+    ld r2, r2, 0
+    rsh r2, r2, ULP_ADC_HISTORY_SHIFT
+    st r2, r1, 0                  /* Save baseline average */
+    
+    /* Determine direction */
+    move r1, detection_direction
+    move r2, 0
+    sub r2, r0, r2                /* Check if current > 0 (always true) */
+    jump set_rise_direction, ov
+set_rise_direction:
+    move r2, 1                    /* 1 = rise */
+    st r2, r1, 0                  /* Save direction */
+    
+    /* Take snapshot at detection moment */
+    jump write_detection_snapshot
+    
+    jump adc_exit
+
+/* Check if we're in confirmation phase */
+check_confirmation_phase:
+    move r1, detection_phase
+    ld r0, r1, 0
+    move r1, 1
+    sub r1, r0, r1
+    jump do_confirmation_check, eq  /* If phase == 1 */
+    jump adc_exit
+
+do_confirmation_check:
+    /* === PHASE 2: Confirmation (2-3 readings later) === */
+    move r1, detection_start_idx
+    ld r2, r1, 0
+    
+    /* Check if we have 2 new readings since detection */
+    move r1, history_idx
+    ld r0, r1, 0
+    sub r1, r0, r2                /* cycles_since_detection */
+    and r1, r1, (ADC_HISTORY_SIZE-1)
+    
+    move r0, 2                    /* Require 2 new readings (400ms) */
+    sub r1, r1, r0
+    jump adc_exit, ov             /* Not enough readings yet */
+    
+    /* Calculate average of 2 confirmation readings */
+    move r0, 0                    /* sum = 0 */
+    move r1, 2                    /* count = 2 */
+    
+    /* Start from detection index + 1 */
+    move r2, detection_start_idx
+    ld r2, r2, 0
+    add r2, r2, 1
+    and r2, r2, (ADC_HISTORY_SIZE-1)
+    
+confirmation_sum_loop:
+    move r3, history
+    add r3, r3, r2
+    ld r3, r3, 0                  /* reading at index */
+    add r0, r0, r3                /* sum += reading */
+    
+    /* Next index */
+    add r2, r2, 1
+    and r2, r2, (ADC_HISTORY_SIZE-1)
+    
+    sub r1, r1, 1
+    jump confirmation_sum_loop, ov /* Loop 2 times */
+    
+    /* Calculate confirmation average: sum / 2 */
+    rsh r0, r0, 1                 /* Efficient divide by 2 */
+    
+    /* Compare with baseline */
+    move r1, baseline_avg
+    ld r3, r1, 0
+    sub r1, r0, r3                /* confirmation_avg - baseline_avg */
+    
+    /* Get threshold */
+    jump adc_get_simple_adaptive_threshold
+    /* r3 = threshold */
+    
+    /* Check direction and threshold */
+    move r2, detection_direction
+    ld r2, r2, 0
+    move r0, 0
+    sub r0, r2, r0
+    jump check_rise_confirmation, eq  /* If direction = rise */
+    
+check_fall_confirmation:
+    /* For fall: confirmation_avg should be below baseline - threshold */
+    add r1, r1, r3                /* diff + threshold */
+    jump confirmation_failed, ov   /* If diff > -threshold, failed */
+    jump confirmation_passed
+    
+check_rise_confirmation:  
+    /* For rise: confirmation_avg should be above baseline + threshold */
+    sub r1, r1, r3
+    jump confirmation_failed, ov   /* If diff < threshold, failed */
+    /* fall through to confirmation_passed */
+
+confirmation_passed:
+    /* === CONFIRMED! Trigger wake === */
+    move r1, detection_phase
+    move r2, 0
+    st r2, r1, 0                  /* Reset phase */
+    
+    /* Set wake reason based on direction */
+    move r2, detection_direction
+    ld r2, r2, 0
+    move r0, 0
+    sub r0, r2, r0
+    jump trigger_charge_start, eq
+    
+trigger_charge_stop:
+    move r2, ULP_WAKE_STATUS_ADC_RAPID_FALL
+    jump set_charge_wake_status
+
+trigger_charge_start:
+    move r2, ULP_WAKE_STATUS_ADC_RAPID_RISE
+    /* fall through */
+
+set_charge_wake_status:
+    /* Anti-spam check */
+    move r1, last_wake_status
+    ld r3, r1, 0
+    and r3, r3, ULP_WAKE_CURRENT_ADC_MASK
+    rsh r3, r3, ULP_WAKE_CURRENT_ADC_SHIFT
+    
+    sub r0, r2, r3
+    jump adc_exit, eq              /* Skip if same reason */
+    
+    /* Set wake status */
+    move r1, curr_wake_status
+    ld r3, r1, 0
+    move r1, last_wake_status
+    st r3, r1, 0
+    
+    move r1, curr_wake_status
+    st r2, r1, 0
+    jump write_snapshot_and_wake
+
+confirmation_failed:
+    /* Reset detection phase */
+    move r1, detection_phase
+    move r2, 0
+    st r2, r1, 0
+    jump adc_exit
+
+/* Take snapshot at detection moment (not confirmation) */
+write_detection_snapshot:
+    /* Save standard ULP state */
+    move r3, snapshot_running_sum
+    move r1, running_sum
+    ld r0, r1, 0
+    st r0, r3, 0
+
+    move r3, snapshot_history_idx
+    move r1, history_idx
+    ld r0, r1, 0
+    st r0, r3, 0
+
+    move r3, snapshot_cycle_count
+    move r1, cycle_count
+    ld r0, r1, 0
+    st r0, r3, 0
+
+    move r3, snapshot_last_result
+    move r1, last_result
+    ld r0, r1, 0
+    st r0, r3, 0
+
+    /* Save detection-specific data */
+    move r3, snapshot_detection_start_idx
+    move r1, detection_start_idx
+    ld r0, r1, 0
+    st r0, r3, 0
+
+    move r3, snapshot_baseline_avg
+    move r1, baseline_avg
+    ld r0, r1, 0
+    st r0, r3, 0
+
+    move r3, snapshot_detection_direction
+    move r1, detection_direction
+    ld r0, r1, 0
+    st r0, r3, 0
+
+    /* Mark snapshot as valid */
+    move r3, snapshot_valid
+    move r0, 1
+    st r0, r3, 0
+
+    jump adc_exit  /* Return from function */
+
 adc_calc_running_avg:
     /* Calculate running average: running_sum / 8 */
     /* This mimics the main processor's efficient approach */
@@ -397,16 +730,20 @@ adc_store_diff:
     move r3, cum_change
     st r1, r3, 0
 
-    /* Check rapid change: if absolute difference >= threshold, trigger wake */
-    move r3, cum_change
-    ld r0, r3, 0                   /* r0 = absolute difference */
-    move r1, ADC_RAPID_CHG_THR_VALUE  /* Direct immediate value, no RAM needed! */
+    /* OLD: Direct threshold check */
+    /* move r3, cum_change
+    ld r0, r3, 0
+    move r1, ADC_RAPID_CHG_THR_VALUE
+    sub r0, r0, r1
+    jump adc_rapid_change_triggered, eq
+    jump adc_rapid_change_triggered, ov
+    jump adc_check_thresholds */
+
+    /* NEW: Enhanced detection */
+    jump adc_check_rapid_change_enhanced
     
-    /* Compare: difference - threshold */
-    sub r0, r0, r1                 /* r0 = difference - threshold */
-    jump adc_rapid_change_triggered, eq  /* Trigger if equal */
-    jump adc_check_thresholds, ov  /* Continue if difference < threshold (overflow) */
-    jump adc_rapid_change_triggered    /* Trigger if difference > threshold */
+    /* Continue to low threshold check */
+    jump adc_check_thresholds
 
 #endif
 
