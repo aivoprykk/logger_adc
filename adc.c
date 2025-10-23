@@ -17,10 +17,10 @@
 #endif
 
 #if (C_LOG_LEVEL <= LOG_INFO_NUM)
-static const char * _adc_battery_states_str[] = { ADC_BAT_STATES(STRINGIFY) };
-static const char * _adc_ulp_wake_sources_str[] = { ADC_ULP_WAKE_SOURCES(STRINGIFY_V) };
-static const char * _adc_ulp_adc_wake_reasons_str[] = { ADC_ULP_ADC_WAKE_REASONS(STRINGIFY_V) };
-static const char * _adc_ulp_button_wake_reasons_str[] = { ADC_ULP_BUTTON_WAKE_REASONS(STRINGIFY_V) };
+static const char * const _adc_battery_states_str[] = { ADC_BAT_STATES(STRINGIFY) };
+static const char * const _adc_ulp_wake_sources_str[] = { ADC_ULP_WAKE_SOURCES(STRINGIFY_V) };
+static const char * const _adc_ulp_adc_wake_reasons_str[] = { ADC_ULP_ADC_WAKE_REASONS(STRINGIFY_V) };
+static const char * const _adc_ulp_button_wake_reasons_str[] = { ADC_ULP_BUTTON_WAKE_REASONS(STRINGIFY_V) };
 const char * adc_battery_states_str(int i) { return _adc_battery_states_str[i]; };
 const char * adc_ulp_wake_sources_str(int i) { return _adc_ulp_wake_sources_str[i]; };
 const char * adc_ulp_adc_wake_reasons_str(int i) { return _adc_ulp_adc_wake_reasons_str[i]; };
@@ -80,7 +80,7 @@ static volatile bool force_instant_voltage = false;
 /* Reduced multiplier to make dynamic threshold more sensitive in noisy conditions */
 #define ADC_NOISE_MULTIPLIER     2   /* multiplier for MAD -> dynamic threshold (was 3) */
 /* Require fewer consecutive confirmations to be more responsive in practice */
-#define ADC_CONSEC_REQUIRED      1   /* require N consecutive detections to confirm (was 2) */
+#define ADC_CONSEC_REQUIRED      2   /* require N consecutive detections to confirm (was 2) */
 
 /* Consecutive confirmation counters (awake CPU-side) */
 static uint8_t adc_consec_up = 0;
@@ -502,6 +502,8 @@ typedef enum {
     TREND_STABLE = 0,
     TREND_RISING,
     TREND_FALLING,
+    TREND_RAPID_RISING,
+    TREND_RAPID_FALLING,
     TREND_VOLATILE
 } voltage_trend_t;
 
@@ -533,8 +535,13 @@ static void adc_get_three_samples(uint32_t *current, uint32_t *prev1, uint32_t *
 #if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     if (current) *current = ULP_GET_U32(ulp_last_result);
     uint32_t index = ULP_GET_U32(ulp_history_idx);
-    if (prev1) *prev1 = ULP_GET_U32(ulp_history[((index - 1 + ULP_ADC_HISTORY_SIZE) % ULP_ADC_HISTORY_SIZE)]);
+    if (prev1) *prev1 = ULP_GET_U32(ulp_history[((index - 2 + ULP_ADC_HISTORY_SIZE) % ULP_ADC_HISTORY_SIZE)]);
     if (prev2) *prev2 = ULP_GET_U32(ulp_history[(index - 3 + ULP_ADC_HISTORY_SIZE) % ULP_ADC_HISTORY_SIZE]);
+    FUNC_ENTRY_ARGT(TAG, "ULP samples: current=%lu, prev1=%lu, prev2=%lu, index=%lu",
+          (current ? *current : 0),
+          (prev1 ? *prev1 : 0),
+          (prev2 ? *prev2 : 0),
+          index);
 #else
     if (current) *current = get_recent_reading(0);
     if (prev1) *prev1 = get_recent_reading(1);
@@ -554,10 +561,10 @@ static uint32_t compute_history_mad(uint8_t available)
 
     adc_snapshot_t snap = {0};
     bool have_snap = adc_get_cached_snapshot(&snap);
-    if (!have_snap || !snap.has_mad) {
+    if (!have_snap || !SNAPSHOT_HAS_MAD(&snap)) {
         have_snap = adc_snapshot_take(&snap, true, 3);
     }
-    if (have_snap && snap.has_mad) {
+    if (have_snap && SNAPSHOT_HAS_MAD(&snap)) {
         return snap.mad;
     }
     /* If snapshot failed, fall back to safe single-sample estimate */
@@ -607,7 +614,7 @@ bool adc_snapshot_take(adc_snapshot_t *out, bool compute_mad, int max_retries)
     out->history_idx = adc_ctx.adc_buffer.head & RESULT_MASK;
     out->history_avg = sum / available;
     out->last_sample = get_recent_reading(0);
-    out->has_snapshot_state = false;
+    SNAPSHOT_CLEAR_STATE(out);
     out->snapshot_state = 0;
     if (compute_mad) {
         uint32_t mad = 0;
@@ -747,7 +754,7 @@ static adc_battery_state_t get_battery_state(void) {
     uint32_t voltage_mv_raw = have_snap ? (snap.last_sample & 0xFFF) : 0;
     uint8_t available = have_snap ? (uint8_t)snap.valid_count : 0;
     uint32_t history_avg_raw = have_snap ? snap.history_avg : 0;
-    uint32_t mad_raw = (have_snap && snap.has_mad) ? snap.mad : 0;
+    uint32_t mad_raw = (have_snap && SNAPSHOT_HAS_MAD(&snap)) ? snap.mad : 0;
     uint32_t current_mv_calibrated = adc_get_cached_batt_mv();
     adc_analysis_t analysis = analyze_adc_readings(voltage_mv_raw, available);
     // ONE-TIME INIT: Set initial state from ULP detection
@@ -1060,7 +1067,7 @@ uint8_t adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t
         .atten = atten,
         .bitwidth = _ADC_BITWIDTH,
     };
-    ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handle);
+    ret = adc_cali_create_scheme_curve_fitting(&cali_config, &adc_ctx.cali_handle);
 #elif defined(ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED)
     cali_mode = "Line Fitting";
     adc_cali_line_fitting_config_t cali_config = {
@@ -1603,7 +1610,7 @@ bool adc_check_and_clear_lcd_charge_flag(void) {
     bool was_set = adc_lcd_charge_notification;
     if (was_set) {
         adc_lcd_charge_notification = false;
-        ESP_LOGD(TAG, "[%s] LCD charge notification flag cleared", __func__);
+        DLOG(TAG, "[%s] LCD charge notification flag cleared", __func__);
     }
     return was_set;
 }

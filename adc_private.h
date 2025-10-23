@@ -63,6 +63,7 @@ extern uint32_t ulp_cum_change;            /* Only lower 16 bits used */
 extern uint32_t ulp_history[ULP_ADC_HISTORY_SIZE];  /* Each: only lower 12 bits used */
 extern uint32_t ulp_history_idx;       /* Only lower 16 bits used */
 extern uint32_t ulp_running_sum;           /* Full 32 bits used */
+extern uint32_t ulp_cum_change;     /* Full 32 bits used */
 typedef struct {
     uint32_t running_sum;    // ULP running_sum word
     uint32_t history_idx;    // ulp_history_idx (next write index)
@@ -70,12 +71,30 @@ typedef struct {
     uint32_t valid_count;    // min(cycle_count, ULP_ADC_HISTORY_SIZE)
     uint32_t history_avg;    // computed average (raw units)
     uint32_t last_sample;    // most recent sample in history
+    uint32_t cum_change;     // ulp_cum_change word
     uint32_t mad;            // optional (computed only if requested)
-    bool has_mad;
+#if defined(CONFIG_ULP_MAD_ENABLED)
     uint32_t snapshot_state; // optional snapshot state written by ULP
-    bool has_snapshot_state;
+    uint16_t flags;  // bit 0: has_mad, bit 1: has_snapshot_state
+    uint16_t reserved[3];
+#else
+    uint8_t flags;  // bit 0: has_mad, bit 1: has_snapshot_state
+    uint8_t reserved[3];
+#endif
 } ulp_history_snapshot_t;
 
+#if defined(CONFIG_ULP_MAD_ENABLED)
+#define SNAPSHOT_HAS_MAD(snap) ((snap)->flags & 0x01)
+#define SNAPSHOT_SET_MAD_FLAG(snap) do { (snap)->flags |= 0x01; } while(0)
+#define SNAPSHOT_CLEAR_MAD_FLAG(snap) do { (snap)->flags &= ~0x01; } while(0)
+#define SNAPSHOT_HAS_STATE(snap) ((snap)->flags & 0x02)
+#define SNAPSHOT_SET_STATE(snap) do { (snap)->flags |= 0x02; } while(0)
+#define SNAPSHOT_CLEAR_STATE(snap) do { (snap)->flags &= ~0x02; } while(0)
+#else
+#define SNAPSHOT_HAS_MAD(snap) ((snap)->flags != 0)
+#define SNAPSHOT_SET_MAD_FLAG(snap) do { (snap)->flags = 1; } while(0)
+#define SNAPSHOT_CLEAR_MAD_FLAG(snap) do { (snap)->flags = 0; } while(0)
+#endif
 /* Generic ADC snapshot type used by both ULP and non-ULP codepaths.
  * When ULP mode is enabled this is identical to ulp_history_snapshot_t.
  * Other modules should use `adc_snapshot_t` to get a unified view of

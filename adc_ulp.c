@@ -27,8 +27,10 @@ extern uint32_t ulp_snapshot_running_sum;
 extern uint32_t ulp_snapshot_history_idx;
 extern uint32_t ulp_snapshot_cycle_count;
 extern uint32_t ulp_snapshot_last_result;
+#if defined(CONFIG_ULP_MAD_ENABLED)
 extern uint32_t ulp_snapshot_mad;
 extern uint32_t ulp_snapshot_state;
+#endif
 
 /* ULP memory is 32-bit word addressed - all variables are uint32_t */
 /* For small values, only lower bits are used */
@@ -48,6 +50,18 @@ extern const uint8_t ulp_battery_bin_end[]   asm("_binary_ulp_battery_bin_end");
 /* Map ADC channel to GPIO pin number */
 static int adc_channel_to_gpio(adc_channel_t channel) {
     switch (channel) {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+        case ADC_CHANNEL_0: return GPIO_NUM_1;
+        case ADC_CHANNEL_1: return GPIO_NUM_2;
+        case ADC_CHANNEL_2: return GPIO_NUM_3;
+        case ADC_CHANNEL_3: return GPIO_NUM_4;
+        case ADC_CHANNEL_4: return GPIO_NUM_5;
+        case ADC_CHANNEL_5: return GPIO_NUM_6;
+        case ADC_CHANNEL_6: return GPIO_NUM_7;
+        case ADC_CHANNEL_7: return GPIO_NUM_8;
+        case ADC_CHANNEL_8: return GPIO_NUM_9;
+        case ADC_CHANNEL_9: return GPIO_NUM_10;
+#else
         case ADC_CHANNEL_0: return GPIO_NUM_36;
         case ADC_CHANNEL_1: return GPIO_NUM_37;
         case ADC_CHANNEL_2: return GPIO_NUM_38;
@@ -56,6 +70,7 @@ static int adc_channel_to_gpio(adc_channel_t channel) {
         case ADC_CHANNEL_5: return GPIO_NUM_33;
         case ADC_CHANNEL_6: return GPIO_NUM_34;
         case ADC_CHANNEL_7: return GPIO_NUM_35;
+#endif
         default:
             ELOG(TAG, "Unsupported ADC channel %d", channel);
             return -1;
@@ -71,6 +86,13 @@ static void adc_ulp_init_rtc_pin(int rtc_gpio)
     // Configure button GPIO for ULP use
     rtc_gpio_init(rtc_gpio);
     rtc_gpio_set_direction(rtc_gpio, RTC_GPIO_MODE_INPUT_ONLY);
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32C3)
+    if (rtc_gpio >= 34 && rtc_gpio <= 39) {
+#else
+    if (rtc_gpio >= 34 && rtc_gpio <= 48) {
+#endif
+        goto end;
+    }
     switch(rtc_gpio) {
 #ifdef CONFIG_ULP_BUTTON_ENABLED
         case CONFIG_ULP_BUTTON_GPIO:
@@ -83,8 +105,8 @@ static void adc_ulp_init_rtc_pin(int rtc_gpio)
             rtc_gpio_pullup_dis(rtc_gpio);
             break;
     }
-    //
-    ILOG(TAG, "GPIO pin %d configured for RTC.", rtc_gpio);
+    end:
+    DLOG(TAG, "GPIO pin %d configured for RTC.", rtc_gpio);
 }
 
 
@@ -99,8 +121,11 @@ static void adc_ulp_uninit_pin(int rtc_gpio)
     rtc_gpio_deinit(rtc_gpio);
     
     /* GPIO 34-39 on ESP32 are input-only - skip reset and hold operations */
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32C3)
     if (rtc_gpio >= 34 && rtc_gpio <= 39) {
-        ILOG(TAG, "GPIO pin %d (input-only) cleared RTC.", rtc_gpio);
+#else
+    if (rtc_gpio >= 34 && rtc_gpio <= 48) {
+#endif
         return;
     }
     
@@ -109,7 +134,7 @@ static void adc_ulp_uninit_pin(int rtc_gpio)
     gpio_hold_dis(rtc_gpio);
     rtc_gpio_hold_dis(rtc_gpio);
     
-    ILOG(TAG, "GPIO pin %d cleared RTC.", rtc_gpio);
+    DLOG(TAG, "GPIO pin %d cleared", rtc_gpio);
 }
 
 static void configure_adc_pad(void)
@@ -152,8 +177,12 @@ static bool ulp_snapshot_read_and_consume_full(uint32_t *running_sum_out,
                                                uint32_t *history_idx_out,
                                                uint32_t *cycle_count_out,
                                                uint32_t *last_result_out,
-                                               uint32_t *mad_out,
-                                               uint32_t *state_out)
+                                               uint32_t *cum_change_out
+#if CONFIG_ULP_MAD_ENABLED
+                                               ,uint32_t *mad_out
+                                               ,uint32_t *state_out
+#endif
+                                               )
 {
     // FUNC_ENTRY(TAG);
     if (!running_sum_out || !history_idx_out || !cycle_count_out || !last_result_out) return false;
@@ -161,16 +190,19 @@ static bool ulp_snapshot_read_and_consume_full(uint32_t *running_sum_out,
     uint32_t valid = ULP_GET_U32(ulp_snapshot_valid);
     if (valid == 0) return false;
     /* Read snapshot fields (ULP wrote these before halting) */
-        *running_sum_out = ULP_GET_U32(ulp_snapshot_running_sum);
-        *history_idx_out = ULP_GET_U32(ulp_snapshot_history_idx);
-        *cycle_count_out = ULP_GET_U32(ulp_snapshot_cycle_count);
-        *last_result_out = ULP_GET_U32(ulp_snapshot_last_result) & 0xFFF;
-        if (mad_out) {
-            *mad_out = ULP_GET_U32(ulp_snapshot_mad) & 0xFFFF; /* ULP writes MAD in lower 16 bits */
-        }
-        if (state_out) {
-            *state_out = ULP_GET_U32(ulp_snapshot_state) & 0xFF; /* small enum in lower 8 bits */
+    *running_sum_out = ULP_GET_U32(ulp_snapshot_running_sum);
+    *history_idx_out = ULP_GET_U32(ulp_snapshot_history_idx);
+    *cycle_count_out = ULP_GET_U32(ulp_snapshot_cycle_count);
+    *last_result_out = ULP_GET_U32(ulp_snapshot_last_result) & 0xFFF;
+    *cum_change_out = ULP_GET_U32(ulp_cum_change);
+#if CONFIG_ULP_MAD_ENABLED
+    if (mad_out) {
+        *mad_out = ULP_GET_U32(ulp_snapshot_mad) & 0xFFFF; /* ULP writes MAD in lower 16 bits */
     }
+    if (state_out) {
+        *state_out = ULP_GET_U32(ulp_snapshot_state) & 0xFF; /* small enum in lower 8 bits */
+    }
+#endif
     /* Consume snapshot so next wake won't reuse stale data */
     ULP_SET_U32(ulp_snapshot_valid, 0);
     FUNC_ENTRY_ARGSD(TAG, "ULP snapshot taken, cycle_count: %lu, last_result: %lu ", *cycle_count_out, *last_result_out);
@@ -181,9 +213,14 @@ static bool ulp_snapshot_read_and_consume_full(uint32_t *running_sum_out,
 static bool ulp_snapshot_read_and_consume(uint32_t *running_sum_out,
                                          uint32_t *history_idx_out,
                                          uint32_t *cycle_count_out,
-                                         uint32_t *last_result_out)
+                                         uint32_t *last_result_out,
+                                         uint32_t *cum_change_out)
 {
-    return ulp_snapshot_read_and_consume_full(running_sum_out, history_idx_out, cycle_count_out, last_result_out, NULL, NULL);
+    return ulp_snapshot_read_and_consume_full(running_sum_out, history_idx_out, cycle_count_out, last_result_out, cum_change_out
+ #if defined(CONFIG_ULP_MAD_ENABLED)
+    , NULL, NULL
+ #endif
+    );
 }
 
 RTC_DATA_ATTR static uint32_t rtc_stored_low_raw = 0;     // persists across deep-sleep (but NOT power-off)
@@ -411,9 +448,10 @@ void start_ulp_program(void)
     ULP_SET_U32(ulp_snapshot_history_idx, 0);
     ULP_SET_U32(ulp_snapshot_cycle_count, 0);
     ULP_SET_U32(ulp_snapshot_last_result, 0);
+#if defined(CONFIG_ULP_MAD_ENABLED)
     ULP_SET_U32(ulp_snapshot_mad, 0);
     ULP_SET_U32(ulp_snapshot_state, 0);
-
+#endif
     ILOG(TAG, "Starting ULP program (fresh sleep - clearing ADC history)...");
     
     /* Note: init_ulp_program() is now called in wakeup_init() at boot, not here.
@@ -591,8 +629,11 @@ void adc_ulp_clear_wake_sources(void) {
 
     /* Consume/clear any snapshot written by ULP - CPU is reading wake reason now */
     ULP_SET_U32(ulp_snapshot_valid, 0);
+#if defined(CONFIG_ULP_MAD_ENABLED)
     ULP_SET_U32(ulp_snapshot_mad, 0);
     ULP_SET_U32(ulp_snapshot_state, 0);
+#endif
+    DLOG(TAG, "Cleared curr_wake_status and consumed ULP snapshot");
 }
 
 /**
@@ -624,7 +665,7 @@ uint8_t adc_ulp_after_wake(void) {
         DLOG(TAG, "Wake from %s: cleared last_wake_status (no ADC wake to compare)",
              adc_ulp_wake_sources_str(wake_source));
     }
-    adc_ulp_uninit_pins();
+    // adc_ulp_uninit_pins();
     return wake_source;
 }
 
@@ -637,13 +678,19 @@ bool ulp_history_snapshot_take(ulp_history_snapshot_t *out, bool compute_mad, in
      * populate `out` from the snapshot and compute MAD over the preserved history
      * if requested. If no snapshot is present, fall back to validated live reads
      * using the existing retry logic. */
-    uint32_t s_running = 0, s_idx = 0, s_cycles = 0, s_last = 0, s_mad = 0, s_state = 0;
-    if (ulp_snapshot_read_and_consume_full(&s_running, &s_idx, &s_cycles, &s_last, &s_mad, &s_state)) {
+    uint32_t s_running = 0, s_idx = 0, s_cycles = 0, s_last = 0, s_cum_change = 0, s_mad = 0
+#if defined(CONFIG_ULP_MAD_ENABLED)
+    , s_state = 0;
+    if (ulp_snapshot_read_and_consume_full(&s_running, &s_idx, &s_cycles, &s_last, &s_cum_change, &s_mad, &s_state)) {
+#else
+    ;
+    if (ulp_snapshot_read_and_consume_full(&s_running, &s_idx, &s_cycles, &s_last, &s_cum_change)) {
+#endif
         DLOG(TAG, "ULP snapshot consumed successfully");
         uint32_t valid = (s_cycles < ULP_ADC_HISTORY_SIZE) ? s_cycles : ULP_ADC_HISTORY_SIZE;
         if (valid == 0) {
             out->valid_count = 0;
-            out->has_mad = false;
+            SNAPSHOT_CLEAR_MAD_FLAG(out);
             return false;
         }
         out->running_sum = s_running;
@@ -656,14 +703,18 @@ bool ulp_history_snapshot_take(ulp_history_snapshot_t *out, bool compute_mad, in
             out->history_avg = s_running / valid;
         }
         out->last_sample = s_last & 0xFFF;
+        out->cum_change = s_cum_change;
         /* Snapshot provides ULP-computed MAD/state if ULP was updated to write them.
          * Prefer ULP's values when available; otherwise compute MAD on CPU if requested. */
+#if defined(CONFIG_ULP_MAD_ENABLED)
         out->snapshot_state = s_state;
-        out->has_snapshot_state = true; /* snapshot was present and consumed */
+        SNAPSHOT_SET_STATE(out);
         if (s_mad != 0) {
             out->mad = s_mad;
-            out->has_mad = true;
-        } else if (compute_mad) {
+            SNAPSHOT_SET_MAD_FLAG(out);
+        } else 
+#endif
+        if (compute_mad) {
             uint32_t oldest = (s_idx + ULP_ADC_HISTORY_SIZE - valid) % ULP_ADC_HISTORY_SIZE;
             uint32_t mad = 0;
             for (uint32_t i = 0; i < valid; ++i) {
@@ -671,9 +722,9 @@ bool ulp_history_snapshot_take(ulp_history_snapshot_t *out, bool compute_mad, in
                 mad += (v > out->history_avg) ? (v - out->history_avg) : (out->history_avg - v);
             }
             out->mad = mad / valid;
-            out->has_mad = true;
+            SNAPSHOT_SET_MAD_FLAG(out);
         } else {
-            out->has_mad = false;
+            SNAPSHOT_CLEAR_MAD_FLAG(out);
         }
         return true;
     }
@@ -697,7 +748,7 @@ bool ulp_history_snapshot_take(ulp_history_snapshot_t *out, bool compute_mad, in
     uint32_t valid = (cycle_count < ULP_ADC_HISTORY_SIZE) ? cycle_count : ULP_ADC_HISTORY_SIZE;
     if (valid == 0) {
         out->valid_count = 0;
-        out->has_mad = false;
+        SNAPSHOT_CLEAR_MAD_FLAG(out);
         return false;
     }
 
@@ -714,7 +765,8 @@ bool ulp_history_snapshot_take(ulp_history_snapshot_t *out, bool compute_mad, in
 
     uint32_t last_idx = (history_idx == 0) ? (ULP_ADC_HISTORY_SIZE - 1) : (history_idx - 1);
     out->last_sample = ULP_GET_ARR_U32(ulp_history, last_idx) & 0xFFF;
-
+    out->cum_change = ULP_GET_U32(ulp_cum_change);
+    
     if (compute_mad) {
         uint32_t oldest = (history_idx + ULP_ADC_HISTORY_SIZE - valid) % ULP_ADC_HISTORY_SIZE;
         uint32_t mad = 0;
@@ -723,9 +775,9 @@ bool ulp_history_snapshot_take(ulp_history_snapshot_t *out, bool compute_mad, in
             mad += (v > out->history_avg) ? (v - out->history_avg) : (out->history_avg - v);
         }
         out->mad = mad / valid;
-        out->has_mad = true;
+        SNAPSHOT_SET_MAD_FLAG(out);
     } else {
-        out->has_mad = false;
+        SNAPSHOT_CLEAR_MAD_FLAG(out);
     }
     return true;
 }
@@ -740,12 +792,11 @@ void debug_ulp_status(void) {
     }
     printf("=== ULP Diagnostic Status ===\n");
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
-    printf("ULP Button Press Counter addr=%p, value=%lu (0x%04lX)\n", 
-           &ulp_button_press_counter, ulp_button_press_counter_get(), ulp_button_press_counter_get());
-    printf("ULP Button Last Result addr=%p, value=%lu (0x%04lX)\n", 
-           &ulp_button_last_result, ulp_button_last_result_get(), ulp_button_last_result_get());
-    // printf("ULP Button vars as uint32: counter=0x%08lX, last=0x%08lX\n",
-    //        ulp_button_press_counter, ulp_button_last_result);
+    printf("ULP Button Enabled, gpio: %d, ", CONFIG_ULP_BUTTON_GPIO);
+    printf("press_counter: addr=%p, value=%lu, ", 
+           &ulp_button_press_counter, ulp_button_press_counter_get());
+    printf("last_result: addr=%p, value=%lu\n", 
+           &ulp_button_last_result, ulp_button_last_result_get());
 #endif
     printf("ULP Thresholds: Low=%lu, Rapid Change=%d\n", 
             ULP_GET_U32(ulp_low_threshold), ADC_RAPID_CHANGE_THRESHOLD);

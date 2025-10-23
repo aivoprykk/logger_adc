@@ -34,7 +34,8 @@ menu "Logger ADC Module Options"
             int "ULP Button GPIO number"
             depends on ULP_BUTTON_ENABLED
             range 0 39
-            default 0
+            default 14 if HAS_BOARD_LILYGO_T_DISPLAY_S3
+            default 12
             help
                 GPIO number for the button (must be RTC GPIO).
                 NOTE: This should match LOGGER_BUTTON_GPIO_0 in logger_button module

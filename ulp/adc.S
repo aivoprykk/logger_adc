@@ -95,12 +95,14 @@ snapshot_cycle_count:
 .global snapshot_last_result
 snapshot_last_result:
     .long 0
+#if CONFIG_ULP_MAD_ENABLED
 .global snapshot_mad
 snapshot_mad:
     .long 0
 .global snapshot_state
 snapshot_state:
     .long 0
+#endif
 #endif
 
 .global cycle_count
@@ -455,10 +457,12 @@ adc_low_set_wake:
     move r1, curr_wake_status
     st r2, r1, 0
 
+#if CONFIG_ULP_MAD_ENABLED
     /* For low-battery wake we skip MAD computation to save cycles.
      * Explicitly set snapshot_mad=0 and snapshot_state to LOW_THR. */
     move r1, 0
     move r2, ULP_WAKE_STATUS_ADC_LOW_THR
+#endif
     jump write_snapshot_and_wake
 
 #if CONFIG_ULP_BATTERY_MONITORING_ENABLED
@@ -500,10 +504,12 @@ adc_rapid_set_wake:
     /* MAD computation removed for ULP (register/instruction limits). Fall through
      * to the skip path which writes snapshot_mad=0 and snapshot_state. */
 
+#if CONFIG_ULP_MAD_ENABLED
     /* Skip computing MAD on rapid-change too (ULP register and instruction limits).
      * Set snapshot_mad=0 and set state to RAPID_CHG. CPU will compute MAD if needed. */
     move r1, 0
     move r2, ULP_WAKE_STATUS_ADC_RAPID_CHG
+#endif
     jump write_snapshot_and_wake
 
 /* Common snapshot writer: expects
@@ -537,6 +543,7 @@ write_snapshot_and_wake:
     move r3, snapshot_last_result
     st r0, r3, 0
 
+#if CONFIG_ULP_MAD_ENABLED
     /* r1 contains MAD (if computed), write it to snapshot_mad */
     move r3, snapshot_mad
     st r1, r3, 0
@@ -544,6 +551,7 @@ write_snapshot_and_wake:
     /* r2 contains the snapshot state enum */
     move r3, snapshot_state
     st r2, r3, 0
+#endif
 
     move r3, snapshot_valid
     move r0, 1
