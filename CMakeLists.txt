@@ -1,6 +1,6 @@
 
 idf_component_register(
-    SRCS adc.c adc_ulp.c
+    SRCS adc.c adc_ulp.c ulp_hardware.c ulp_program.c
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
     REQUIRES esp_event logger_common

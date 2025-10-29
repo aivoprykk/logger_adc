@@ -46,7 +46,7 @@ typedef enum {
 
 /* ULP wake reason enumerations - public API */
 typedef enum {
-    ADC_ULP_ADC_WAKE_REASONS(ADC_ULP_ADC_WAKE_REASONS_ENUM)
+    ADC_ULP_BAT_STATES(ADC_ULP_ADC_WAKE_REASONS_ENUM)
 } adc_ulp_adc_wake_reason_t;
 
 typedef enum {
@@ -111,7 +111,6 @@ bool should_filter_charge_events(void);             /* Check if charge events sh
 int init_ulp_program(void);                        /* Load ULP binary (runs once at power-up) */
 esp_err_t init_ulp_adc(void);                      /* Initialize ULP ADC hardware (with locking) */
 void deinit_ulp_adc(void);                         /* Deinitialize ULP ADC hardware (with locking) */
-void start_ulp_program(void);
 void debug_ulp_status(void);                /* Debug function to show ULP status */
 adc_battery_state_t get_battery_state_from_ulp(void);  /* Get battery state using ULP variables on wakeup */
 uint8_t adc_get_ulp_wake_source(void);                /* Get current ULP wake source */
@@ -134,6 +133,10 @@ void adc_ulp_uninit_pins(void);
  * state so rapid change detection continues to work.
  */
 void resume_ulp_program(void);
+
+void ulp_prog_set_main_cpu_running(bool running);
+bool ulp_prog_main_cpu_is_running(void);
+bool ulp_prog_is_initialized(void);
 
 #endif /* CONFIG_ULP_COPROC_ENABLED */
 

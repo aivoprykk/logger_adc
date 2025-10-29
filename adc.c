@@ -19,14 +19,14 @@
 #if (C_LOG_LEVEL <= LOG_INFO_NUM)
 static const char * const _adc_battery_states_str[] = { ADC_BAT_STATES(STRINGIFY) };
 static const char * const _adc_ulp_wake_sources_str[] = { ADC_ULP_WAKE_SOURCES(STRINGIFY_V) };
-static const char * const _adc_ulp_adc_wake_reasons_str[] = { ADC_ULP_ADC_WAKE_REASONS(STRINGIFY_V) };
+static const char * const _adc_ulp_adc_wake_reasons_str[] = { ADC_ULP_BAT_STATES(STRINGIFY_V) };
 static const char * const _adc_ulp_button_wake_reasons_str[] = { ADC_ULP_BUTTON_WAKE_REASONS(STRINGIFY_V) };
 const char * adc_battery_states_str(int i) { return _adc_battery_states_str[i]; };
 const char * adc_ulp_wake_sources_str(int i) { return _adc_ulp_wake_sources_str[i]; };
 const char * adc_ulp_adc_wake_reasons_str(int i) { return _adc_ulp_adc_wake_reasons_str[i]; };
 const char * adc_ulp_button_wake_reasons_str(int i) { return _adc_ulp_button_wake_reasons_str[i]; };
 #else
-const char * nums[] = { "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10" };
+const char * nums[] = { "0", "1", "2", "3", "4", "5", "6", "7", "8", "9" };
 const char * adc_battery_states_str(int i) {
 #if (C_LOG_LEVEL <= LOG_ERR_NUM)
     if(i==ADC_BATTERY_CRITICAL_LOW)  return "CRITICAL_LOW";
@@ -420,6 +420,9 @@ static void post_battery_state_event(adc_battery_state_t state, const char* sour
         case ADC_BATTERY_CHARGING_STOPPED:
             event_id = ADC_EVENT_CHARGE_STOPPED;
             break;
+        case ADC_BATTERY_CHARGE_STABILIZED:
+            event_id = ADC_EVENT_CHARGE_STABILIZED;
+            break;
         case ADC_BATTERY_CRITICAL_LOW:
             event_id = ADC_EVENT_BATTERY_CRITICAL;
             break;
@@ -448,6 +451,12 @@ static void post_battery_state_event(adc_battery_state_t state, const char* sour
         
         // Update internal ADC state to reflect the change we're about to post
         last_adc_battery_state = state;
+        
+        // Sync charging state to ULP
+// #if defined(CONFIG_ULP_COPROC_ENABLED)
+//         bool charging = (state == ADC_BATTERY_CHARGING_STARTED);
+//         ULP_SET_U32(ulp_charging_active, charging ? 1 : 0);
+// #endif
     }
     
     // Post the event
@@ -471,6 +480,11 @@ static void post_battery_state_event(adc_battery_state_t state, const char* sour
             adc_charging_is_on = false;  // Update internal flag
             adc_lcd_charge_notification = true;  // Notify LCD of charge event
             esp_event_post(ADC_EVENT, ADC_EVENT_CHARGE_STOPPED, NULL, 0, pdMS_TO_TICKS(100));
+            break;
+        case ADC_BATTERY_CHARGE_STABILIZED:
+            ILOG(TAG, "%s detected %s: %ld mV", source, adc_battery_states_str(ADC_BATTERY_CHARGE_STABILIZED), voltage_mv);
+            adc_charging_is_on = true;  // Keep charging flag active
+            esp_event_post(ADC_EVENT, ADC_EVENT_CHARGE_STABILIZED, NULL, 0, pdMS_TO_TICKS(100));
             break;
         case ADC_BATTERY_CRITICAL_LOW:
             ELOG(TAG, "%s detected %s: %ld mV", source, adc_battery_states_str(ADC_BATTERY_CRITICAL_LOW), voltage_mv);
@@ -527,28 +541,6 @@ typedef struct {
  */
 static adc_analysis_t analyze_adc_readings(uint32_t current_reading, uint8_t available);
 
-/* Helper: fetch three most-recent samples (current, prev1, prev2)
- * abstracts ULP vs non-ULP source so main analysis logic is unified.
- */
-static void adc_get_three_samples(uint32_t *current, uint32_t *prev1, uint32_t *prev2)
-{
-#if defined(CONFIG_LOGGER_ADC_MODE_ULP)
-    if (current) *current = ULP_GET_U32(ulp_last_result);
-    uint32_t index = ULP_GET_U32(ulp_history_idx);
-    if (prev1) *prev1 = ULP_GET_U32(ulp_history[((index - 2 + ULP_ADC_HISTORY_SIZE) % ULP_ADC_HISTORY_SIZE)]);
-    if (prev2) *prev2 = ULP_GET_U32(ulp_history[(index - 3 + ULP_ADC_HISTORY_SIZE) % ULP_ADC_HISTORY_SIZE]);
-    FUNC_ENTRY_ARGT(TAG, "ULP samples: current=%lu, prev1=%lu, prev2=%lu, index=%lu",
-          (current ? *current : 0),
-          (prev1 ? *prev1 : 0),
-          (prev2 ? *prev2 : 0),
-          index);
-#else
-    if (current) *current = get_recent_reading(0);
-    if (prev1) *prev1 = get_recent_reading(1);
-    if (prev2) *prev2 = get_recent_reading(2);
-#endif
-}
-
 /* Helper: compute MAD (mean absolute deviation) over available history.
  * Uses ULP snapshot when available for efficiency; falls back to CPU computation.
  */
@@ -592,7 +584,14 @@ bool adc_snapshot_take(adc_snapshot_t *out, bool compute_mad, int max_retries)
     FUNC_ENTRYD(TAG);
     if (!out) return false;
 #if defined(CONFIG_LOGGER_ADC_MODE_ULP)
-    /* Use ULP snapshot reader which preserves frozen snapshots written at wake */
+    /* Take a fresh snapshot of current ULP state, then read it back */
+    if (!adc_ulp_take_history_snapshot(0)) {  /* snapshot_state = 0 for manual snapshots */
+        out->valid_count = 0;
+        SNAPSHOT_CLEAR_MAD_FLAG(out);
+        SNAPSHOT_CLEAR_STATE(out);
+        return false;
+    }
+    /* Use ULP snapshot reader to read the snapshot we just took */
     return ulp_history_snapshot_take((ulp_history_snapshot_t*)out, compute_mad, max_retries);
 #else
     uint8_t available = adc_ctx.adc_buffer.count;
@@ -769,6 +768,8 @@ static adc_battery_state_t get_battery_state(void) {
     FUNC_ENTRY_ARGS(TAG, "voltage:%lumV, raw: %lu, charging:%d, trend:%d, roc:%ld",
            voltage_mv, voltage_mv_raw, is_charging, analysis.trend, analysis.rate_of_change);
     
+    debug_ulp_status();
+
     // 1. SAFETY FIRST: Critical low always triggers
     if (voltage_mv < BATTERY_CRITICAL_LOW_MV) {
         return ADC_BATTERY_CRITICAL_LOW;
@@ -850,7 +851,13 @@ static adc_battery_state_t get_battery_state(void) {
     
     // 3. STATE REPORTING
     if (is_charging) {
-        return ADC_BATTERY_CHARGING_STARTED;
+        // Check if charging has stabilized (been active for more than 30 seconds)
+        const uint32_t CHARGE_STABILIZE_MS = 30000; // 30 seconds
+        if ((current_ms - last_charge_change_ms) >= CHARGE_STABILIZE_MS) {
+            return ADC_BATTERY_CHARGE_STABILIZED;
+        } else {
+            return ADC_BATTERY_CHARGING_STARTED;
+        }
     } else {
         // Battery level reporting
         if (voltage_mv < BATTERY_LOW_MV) {
@@ -885,7 +892,7 @@ static adc_analysis_t analyze_adc_readings(uint32_t voltage_mv, uint8_t availabl
     result.filtered_reading = voltage_mv;
     /* Unified sample acquisition (ULP or recent buffer) */
     uint32_t current = 0, prev1 = 0, prev2 = 0;
-    adc_get_three_samples(&current, &prev1, &prev2);
+    ulp_get_three_samples(&current, &prev1, &prev2);
     DLOG(TAG, "ADC readings: current=%lu, prev1=%lu, prev2=%lu", current, prev1, prev2);
 
     if (available >= trend_detection[1].readings) {
@@ -971,6 +978,12 @@ static void handle_adc_battery_state(void) {
         
 
         last_adc_battery_state = new_state;
+        
+        // Sync charging state to ULP
+// #if defined(CONFIG_ULP_COPROC_ENABLED)
+//         bool charging = (new_state == ADC_BATTERY_CHARGING_STARTED);
+//         ULP_SET_U32(ulp_charging_active, charging ? 1 : 0);
+// #endif
     }
 }
 
@@ -1319,7 +1332,7 @@ esp_err_t adc_init(void) {
     /* Note: ULP configures GPIO in RTC mode, which disconnects it from digital ADC */
     /* Therefore, we skip ADC calibration and rely on VOLTAGE_CONV macro instead */
     ILOG(TAG, "ULP as primary ADC source - using manual voltage conversion");
-    start_ulp_program();
+    resume_ulp_program();
 #elif defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = _ADC_UNIT_0,

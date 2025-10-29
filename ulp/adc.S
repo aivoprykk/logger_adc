@@ -1,12 +1,14 @@
 /*
- adc.S
+ adc.S - REORGANIZED VERSION
  */
 
 #include "soc/rtc_cntl_reg.h"
 #include "soc/rtc_io_reg.h"
 #include "soc/soc_ulp.h"
 #include "../ulp_adc_config.h"
-
+.set CONFIRMATION_READINGS, ULP_CONFIRMATION_READINGS
+.set ULP_ADC_CONFIRMATION_SAMPLES, CONFIRMATION_READINGS
+.set HISTORY_INDEX_ADDR, 0
 /* Configuration from preprocessor flags */
 #if CONFIG_ULP_BUTTON_ENABLED
 .set BUTTON_RTC_IO, ULP_BUTTON_RTC_IO
@@ -35,116 +37,361 @@
 /* Compile-time constants - no RAM needed! */
 .set ADC_RAPID_CHG_THR_VALUE, ADC_RAPID_CHANGE_THRESHOLD
 
+/* Add threshold constants */
+.set CHARGE_STOP_THRESHOLD, 80  /* ~80mV drop for charge stop detection */
+
 /* Global variables */
 .bss
-/* ULP memory is 32-bit word addressed - must use .long for reliable access */
-/* For values that fit in 16 bits, we use only lower 16 bits of the 32-bit word */
-
-/* Wake status - 2 variables instead of 1 (saves code) or 6 (saves data) */
 .global curr_wake_status
 curr_wake_status:
-    .long 0  /* Packed: bits 0-1=source, 2-4=adc_reason, 5-7=button_reason */
+    .long 0
+
 .global last_wake_status
 last_wake_status:
-    .long 0  /* Packed: bits 0-1=source, 2-4=adc_reason, 5-7=button_reason */
+    .long 0
+
 .global low_threshold
 low_threshold:
     .long 0
+
+.global adaptive_threshold
+adaptive_threshold:
+    .long 0
+
 #if CONFIG_ULP_BUTTON_ENABLED
 .global button_press_counter
 button_press_counter:
-    .long 0  /* ULP st instruction writes 32-bit, must use .long */
+    .long 0
+
 .global button_last_result
 button_last_result:
-    .long 0  /* ULP st instruction writes 32-bit, must use .long */
+    .long 0
 #endif
 
 .global last_result
 last_result:
-    .long 0  /* 32-bit word, only lower 12 bits used (ADC reading max 4095) */
+    .long 0
 
-#if CONFIG_ULP_BATTERY_MONITORING_ENABLED
 .global cum_change
 cum_change:
-    .long 0  /* 32-bit word, only lower 16 bits used */
-.global history
-history: 
-    .space (ADC_HISTORY_SIZE * 4)  /* 4 elements * 4 bytes, only lower 12 bits used */
+    .long 0
+
+#if CONFIG_ULP_BATTERY_MONITORING_ENABLED
 .global history_idx
 history_idx:
-    .long 0  /* 32-bit word, only lower 16 bits used (index 0-3) */
+    .long 0
+
 .global running_sum
 running_sum:
-    .long 0  /* 32-bit: full word used (sum can be 4*4095=16380) */
+    .long 0
 
-/* Snapshot variables: written by ULP immediately before waking the main CPU
- * so the CPU can later inspect the exact ULP state that caused the wake.
- * Only lower 16 bits are used for most fields, snapshot_valid is 0/1. */
-.global snapshot_valid
-snapshot_valid:
-    .long 0
-.global snapshot_running_sum
-snapshot_running_sum:
-    .long 0
-.global snapshot_history_idx
-snapshot_history_idx:
-    .long 0
-.global snapshot_cycle_count
-snapshot_cycle_count:
-    .long 0
-.global snapshot_last_result
-snapshot_last_result:
-    .long 0
-#if CONFIG_ULP_MAD_ENABLED
-.global snapshot_mad
-snapshot_mad:
-    .long 0
-.global snapshot_state
-snapshot_state:
-    .long 0
-#endif
 .global detection_phase
 detection_phase:
-    .long 0  /* 0=idle, 1=waiting confirmation */
+    .long 0
 
-.global detection_start_idx  
+.global detection_start_idx
 detection_start_idx:
-    .long 0  /* history_idx when detection started */
+    .long 0
 
 .global baseline_avg
 baseline_avg:
-    .long 0  /* running_avg at detection time */
+    .long 0
+
+.global confirmation_sum
+confirmation_sum:
+    .long 0
+
+.global confirmation_count
+confirmation_count:
+    .long 0
+
+.global confirmation_avg
+confirmation_avg:
+    .long 0
 
 .global detection_direction
 detection_direction:
-    .long 0  /* 0=fall, 1=rise */
+    .long 0
 
-.global snapshot_detection_start_idx
-snapshot_detection_start_idx:
+.global charging_active
+charging_active:
+    .long 0
+
+.global snapshot_confirmation_avg
+snapshot_confirmation_avg:
     .long 0
 
 .global snapshot_baseline_avg
 snapshot_baseline_avg:
     .long 0
 
-.global snapshot_detection_direction  
-snapshot_detection_direction:
+/* History snapshot variables for main CPU access */
+.global snapshot_running_sum
+snapshot_running_sum:
     .long 0
 
-/* Add threshold constants */
-.set CHARGE_STOP_THRESHOLD, 80  /* ~80mV drop for charge stop detection */
+.global snapshot_history_idx
+snapshot_history_idx:
+    .long 0
+
+.global snapshot_cycle_count
+snapshot_cycle_count:
+    .long 0
+
+.global snapshot_valid_count
+snapshot_valid_count:
+    .long 0
+
+.global snapshot_history_avg
+snapshot_history_avg:
+    .long 0
+
+.global snapshot_last_sample
+snapshot_last_sample:
+    .long 0
+
+.global snapshot_cum_change
+snapshot_cum_change:
+    .long 0
+
+.global snapshot_mad
+snapshot_mad:
+    .long 0
+
+.global snapshot_state
+snapshot_state:
+    .long 0
+
+.global snapshot_valid
+snapshot_valid:
+    .long 0
 #endif
+
+/* History buffer */
+.global history
+history:
+    .skip ADC_HISTORY_SIZE * 4  /* 4 bytes per entry */
 
 .global cycle_count
 cycle_count:
-    .long 0  /* 32-bit: full word used (can grow large) */
+    .long 0  /* Total cycles run */
+
+.global main_cpu_running
+main_cpu_running:
+    .long 0  /* Flag: 1 if main CPU is running */
 
 .text
 .global entry
+
+/* Unified snapshot routine - expects state value in r0 */
+take_snapshot_routine:
+    /* Set snapshot valid flag */
+    move r1, snapshot_valid
+    move r2, 1
+    st r2, r1, 0
+
+    /* Snapshot running_sum */
+    move r1, running_sum
+    ld r2, r1, 0
+    move r1, snapshot_running_sum
+    st r2, r1, 0
+
+    /* Snapshot history_idx */
+    move r1, history_idx
+    ld r2, r1, 0
+    move r1, snapshot_history_idx
+    st r2, r1, 0
+
+    /* Snapshot cycle_count */
+    move r1, cycle_count
+    ld r2, r1, 0
+    move r1, snapshot_cycle_count
+    st r2, r1, 0
+
+    /* Calculate and snapshot valid_count */
+    move r1, cycle_count
+    ld r2, r1, 0
+    move r1, ADC_HISTORY_SIZE
+    sub r1, r2, r1
+    jump snapshot_valid_count_full_routine, ov
+    move r2, ADC_HISTORY_SIZE
+snapshot_valid_count_full_routine:
+    move r1, snapshot_valid_count
+    st r2, r1, 0
+
+    /* Calculate and snapshot history_avg */
+    move r1, running_sum
+    ld r2, r1, 0
+    rsh r2, r2, ULP_ADC_HISTORY_SHIFT
+    move r1, snapshot_history_avg
+    st r2, r1, 0
+
+    /* Snapshot last_sample */
+    move r1, last_result
+    ld r2, r1, 0
+    move r1, snapshot_last_sample
+    st r2, r1, 0
+
+    /* Snapshot cum_change */
+    move r1, cum_change
+    ld r2, r1, 0
+    move r1, snapshot_cum_change
+    st r2, r1, 0
+
+    /* Calculate and snapshot MAD (simplified - just store 0 for now) */
+    move r1, snapshot_mad
+    move r2, 0
+    st r2, r1, 0
+
+    /* Snapshot state (value passed in r0) */
+    and r0, r0, ULP_WAKE_CURRENT_ADC_MASK
+    rsh r0, r0, ULP_WAKE_CURRENT_ADC_SHIFT
+    move r1, snapshot_state
+    st r0, r1, 0
+
+    /* Return to appropriate caller based on r3 */
+    move r0, 1
+    sub r0, r3, r0
+    jump snapshot_return_1, eq
+    jump snapshot_return_2
+
+/* Common wakeup handler for both ADC and button */
+wake_main_cpu:
+    /* Wake up the main CPU */
+    wake  /* Wake main CPU */
+    /* HALT the ULP after waking - main CPU will restart us */
+    halt  /* Stop ULP execution - main CPU must restart with start_ulp_program() */
+
+wake_skip:
+    /* Main CPU already running - just continue to sleep cycle */
+    jump sleep_cycle
+
+snapshot_return_1:
+    /* Reset confirmation variables after successful confirmation */
+    move r1, detection_phase
+    move r0, 0
+    st r0, r1, 0
+    
+    move r1, confirmation_sum
+    st r0, r1, 0
+    
+    move r1, confirmation_count
+    st r0, r1, 0
+    
+    move r1, confirmation_avg
+    st r0, r1, 0
+    
+    move r1, detection_direction
+    st r0, r1, 0
+    
+    /* Set wake status */
+    move r1, curr_wake_status
+    ld r3, r1, 0
+    move r1, last_wake_status
+    st r3, r1, 0
+    
+    move r1, curr_wake_status
+    st r2, r1, 0
+    
+    /* Only wake if main CPU is not already running */
+    move r1, main_cpu_running
+    ld r0, r1, 0
+    move r1, 0
+    sub r1, r0, r1
+    jump wake_skip, eq  /* Skip wake if main CPU is running */
+    jump wake_main_cpu
+
+snapshot_return_2:
+    /* Copy current to last (single load/store) */
+    move r1, curr_wake_status
+    ld r2, r1, 0
+    move r1, last_wake_status
+    st r2, r1, 0
+    
+    /* Set current status - preprocessor-calculated from container macro! */
+    move r2, ULP_BAT_STATUS_CRITICAL_LOW         /* Auto-generated: (ADC | (LOW_THR << 2)) = 0x05 */
+    move r1, curr_wake_status
+    st r2, r1, 0
+    
+    /* Only wake if main CPU is not already running */
+    move r1, main_cpu_running
+    ld r0, r1, 0
+    move r1, 0
+    sub r1, r0, r1
+    jump wake_skip, eq  /* Skip wake if main CPU is running */
+    jump wake_main_cpu
+
+.global entry
 entry:
-    /* CRITICAL: Check wake status FIRST, before anything else!
-     * If a wake event is pending, we MUST skip ALL processing to preserve the wake reason.
-     * This prevents ADC from overwriting button wake status. */
+    /* Check if this is first run (cycle_count == 0) */
+    move r1, cycle_count
+    ld r0, r1, 0
+    move r2, 0
+    sub r2, r0, r2
+    jump first_run_init, eq  /* If cycle_count == 0, initialize */
+
+    /* Resume from previous state - skip initialization */
+    jump wake_check
+
+sleep_cycle:
+    /* Wait for configured delay using loop (wait instruction limited to 16-bit) */
+    stage_rst
+    stage_inc WAIT_ITERATIONS
+
+wait_loop:
+    wait WAIT_TICKS_PER_ITER
+    stage_dec 1
+    jumps wait_loop, 1, ge
+    
+    jump main_loop
+
+first_run_init:
+#if CONFIG_ULP_BATTERY_MONITORING_ENABLED
+    /* Initialize confirmation variables (not reset by main CPU) */
+    move r1, detection_phase
+    move r2, 0
+    st r2, r1, 0
+    
+    move r1, confirmation_sum
+    st r2, r1, 0
+    
+    move r1, confirmation_count
+    st r2, r1, 0
+    
+    move r1, confirmation_avg
+    st r2, r1, 0
+    
+    move r1, detection_direction
+    st r2, r1, 0
+#endif
+    
+    /* Initialize cycle_count (already reset by main CPU, but keep for safety) */
+    move r1, cycle_count
+    move r2, 0
+    st r2, r1, 0
+
+    /* Clear history buffer (already cleared by main CPU, but keep for safety) */
+    move r1, history
+    move r2, 0
+    move r3, ADC_HISTORY_SIZE
+clear_history_loop:
+    st r2, r1, 0      /* history[i] = 0 */
+    add r1, r1, 1      /* i++ */
+    sub r3, r3, 1
+    jump clear_history_loop, ov /* Loop if r3 > 0 */
+
+    /* After initialization, check wake status */
+    jump wake_check
+
+wake_check:
+    /* Check wake status */
+    move r1, main_cpu_running
+    ld r2, r1, 0
+    move r0, 0
+    sub r0, r2, r0  /* Check if main CPU is running */
+    jump when_wake_no_process, ov  /* If main CPU is running, skip wake source check but continue processing */
+
+    /* Main CPU is asleep - check wake status */
     move r1, curr_wake_status
     ld r2, r1, 0
     and r3, r2, ULP_WAKE_CURRENT_SOURCE_MASK
@@ -152,56 +399,209 @@ entry:
     sub r0, r3, r0  /* Check if source != 0 */
     jump adc_frozen, ov  /* If wake source is set (non-zero), skip everything and sleep */
 
-    /* DON'T clear wake_data here - main CPU clears it via adc_ulp_clear_wake_sources() */
-    /* This preserves wake_data so main CPU can read it after ULP wake */
-
-    /* DON'T reset cycle_count here - let it continue across restarts */
-    /* This prevents timing issues when ULP is restarted frequently */
-
-#if CONFIG_ULP_BATTERY_MONITORING_ENABLED
-    /* Initialize first time flag check for ADC */
-    /* First run if both history_idx==0 AND cycle_count==0 */
-    move r1, history_idx
-    ld r2, r1, 0
-    jump check_cycle_count, eq  // If idx is 0, check cycle_count
-    jump main_loop              // idx != 0, not first run
-    
-check_cycle_count:
-    move r1, cycle_count
-    ld r2, r1, 0
-    jump first_run_init, eq     // If cycle_count is also 0, do initialization
-#endif
+when_wake_no_process:
+    /* Continue with normal processing regardless of main CPU state */
     jump main_loop
 
-first_run_init:
+adc_frozen:
+    /* ADC is frozen because wake is already set - just sleep */
+    jump sleep_cycle
+
+/* ========================================================================== */
+/* BATTERY SENSING CODE - REORGANIZED FOR JUMP DISTANCE */
+/* ========================================================================== */
+
+adc_measure_and_check:
+    /* Always perform ADC measurement to support confirmation phase */
+    jump when_adc_start
+
+when_adc_start:
+    /* ADC measurement */
+    move r0, ADC_STABILIZATION_DELAY
+adc_delay:
+    sub r0, r0, 1
+    jump adc_delay, ov
+
+    /* Read ADC with oversampling */
+    move r0, 0
+    stage_rst
+adc_read_loop:
+    adc r1, 0, adc_channel + 1
+    add r0, r0, r1
+    stage_inc 1
+    jumps adc_read_loop, adc_oversampling_factor, lt
+
+    rsh r0, r0, adc_oversampling_factor_log
+    
+    and r0, r0, 0xFFF
+    
+    /* Store ADC value */
+    move r1, last_result
+    st r0, r1, 0
+
+    /* Validate ADC reading - skip if reading seems invalid (too low or too high) */
+    move r1, 500   /* Minimum valid reading */
+    sub r1, r0, r1
+    jump sleep_cycle, ov  /* Jump if reading < 500 */
+    
+    move r1, 3500  /* Maximum valid reading */
+    sub r1, r1, r0
+    jump sleep_cycle, ov  /* Jump if reading > 3500 */
+
 #if CONFIG_ULP_BATTERY_MONITORING_ENABLED
-    /* First run - initialize ALL variables */
+    /* Store current reading */
+    move r1, last_result
+    st r0, r1, 0
+    
+    /* Update history buffer */
     move r1, history_idx
-    move r2, 0
-    st r2, r1, 0
+    ld r2, r1, 0
+    
+    /* Subtract old value from running sum */
+    move r1, history
+    add r1, r1, r2
+    ld r0, r1, 0
     
     move r1, running_sum
-    move r2, 0
-    st r2, r1, 0
-#endif
+    ld r3, r1, 0
+    sub r3, r3, r0
+    st r3, r1, 0
     
-    /* Initialize cycle_count only on first run */
+    /* Add new ADC value to running sum */
+    move r1, last_result
+    ld r0, r1, 0
+    move r1, running_sum
+    ld r3, r1, 0
+    add r3, r3, r0
+    st r3, r1, 0
+    
+    /* Store new value in array */
+    move r1, history_idx
+    ld r2, r1, 0
+    move r3, history
+    add r3, r3, r2
+    move r1, last_result
+    ld r0, r1, 0
+    st r0, r3, 0
+    
+    /* Advance index */
+    move r1, history_idx
+    ld r2, r1, 0
+    add r2, r2, 1
+    move r3, (ADC_HISTORY_SIZE-1)
+    and r2, r2, r3
+    st r2, r1, 0
+    
+    /* Check if buffer full */
     move r1, cycle_count
-    move r2, 0
-    st r2, r1, 0
+    ld r2, r1, 0
+    move r3, ADC_HISTORY_SIZE
+    sub r0, r2, r3
+    jump sleep_cycle, ov              /* Skip if cycle_count < ADC_HISTORY_SIZE */
+    
+    jump adc_calc_running_avg
 
-#if CONFIG_ULP_BUTTON_ENABLED
-    move r1, button_press_counter
-    move r2, 0
-    st r2, r1, 0
-#endif
+adc_calc_running_avg:
+    /* Calculate running average: running_sum / 8 */
+    /* This mimics the main processor's efficient approach */
+    move r1, running_sum
+    ld r2, r1, 0                   /* r2 = running_sum */
+    
+    /* Calculate average (divide by ULP_ADC_HISTORY_SHIFT) */
+    rsh r2, r2, ULP_ADC_HISTORY_SHIFT  /* r2 = running_sum / 8 */
 
-    /* Clear wake status variables */
-    move r2, 0
-    move r1, curr_wake_status
-    st r2, r1, 0
+    /* === CHECK LOW BATTERY FIRST === */
+    /* Skip low battery check if last wake was already low battery (anti-spam) */
     move r1, last_wake_status
-    st r2, r1, 0
+    ld r3, r1, 0
+    and r3, r3, ULP_WAKE_CURRENT_ADC_MASK
+    rsh r3, r3, ULP_WAKE_CURRENT_ADC_SHIFT
+    move r1, ADC_ULP_BAT_STATE_CRITICAL_LOW
+    sub r0, r3, r1
+    jump skip_low_battery_check, eq  /* Skip if last wake was low battery */
+    
+    /* Always check low threshold before rapid change detection */
+    /* This prevents low battery from being masked by rapid change detection */
+    move r3, low_threshold
+    ld r1, r3, 0                   /* r1 = low_threshold value */
+    sub r0, r2, r1                 /* r0 = avg - low_thresh */
+    jump low_battery_wake, ov  /* If avg < low_thresh, immediate wake */
+
+skip_low_battery_check:
+
+    /* CRITICAL: Don't check rapid change on cold start (when history buffer not yet filled)
+     * If cycle_count < HISTORY_SIZE, we don't have enough data for accurate comparison
+     * Comparing against zeros or partial data causes false triggers! */
+    move r1, cycle_count
+    ld r0, r1, 0
+    move r1, ULP_ADC_HISTORY_SIZE
+    sub r0, r0, r1                 /* r0 = cycle_count - HISTORY_SIZE */
+    jump sleep_cycle, ov              /* If cycle_count < HISTORY_SIZE, skip rapid change check */
+
+    /* Skip rapid change check if last wake was already rapid change (anti-spam) */
+    move r1, last_wake_status
+    ld r3, r1, 0
+    and r3, r3, ULP_WAKE_CURRENT_ADC_MASK
+    rsh r3, r3, ULP_WAKE_CURRENT_ADC_SHIFT
+    move r1, ADC_ULP_BAT_STATE_CHARGING_STARTED
+    sub r0, r3, r1
+    jump sleep_cycle, eq  /* Skip if last wake was charging started */
+    move r1, ADC_ULP_BAT_STATE_CHARGING_STOPPED
+    sub r0, r3, r1
+    jump sleep_cycle, eq  /* Skip if last wake was charging stopped */
+
+    /* Calculate absolute difference between current reading and running average */
+    /* This detects RAPID changes, not cumulative drift */
+    move r3, last_result
+    ld r0, r3, 0              /* r0 = last_result (current reading) */
+    
+    /* Calculate absolute difference: |last_result - average| */
+    sub r1, r0, r2            /* r1 = last_result - average */
+    jump adc_positive_diff, ov /* Jump if negative (overflow) */
+    jump adc_store_diff       /* Already positive, store it */
+    
+adc_positive_diff:
+    sub r1, r2, r0            /* r1 = average - last_result (make positive) */
+    
+adc_store_diff:
+    /* r1 now contains absolute difference */
+    move r3, cum_change
+    st r1, r3, 0
+
+    /* Call enhanced detection with pre-calculated |diff| */
+    jump adc_check_rapid_change_enhanced
+
+adc_check_rapid_change_enhanced:
+    /* Check if already in confirmation phase */
+    move r1, detection_phase
+    ld r0, r1, 0
+    move r2, r0
+    jump threshold_check, eq  /* If phase == 0, check for new detection */
+    jump detection_already_active  /* If phase != 0, continue confirmation */
+
+detection_already_active:
+    /* Already in confirmation phase - add to confirmation sum */
+    move r1, confirmation_count
+    ld r0, r1, 0
+    move r2, ULP_ADC_CONFIRMATION_SAMPLES
+    sub r2, r0, r2
+    jump confirmation_complete, eq  /* If count == CONFIRMATION_SAMPLES, check confirmation */
+
+    /* Add current reading to confirmation sum */
+    move r1, last_result
+    ld r0, r1, 0              /* r0 = current reading */
+    move r1, confirmation_sum
+    ld r2, r1, 0              /* r2 = current sum */
+    add r2, r2, r0
+    st r2, r1, 0              /* confirmation_sum += current_reading */
+
+    /* Increment confirmation count */
+    move r1, confirmation_count
+    ld r0, r1, 0
+    add r0, r0, 1
+    st r0, r1, 0
+
+    jump main_loop
 
 main_loop:
 #if CONFIG_ULP_BUTTON_ENABLED
@@ -249,7 +649,7 @@ button_pressed:
     add r2, r2, 1
     st r2, r1, 0
 
-    /* Don't check threshold here - wait for release to avoid false triggers */
+    /* Don't check threshold here - avoid false triggers */
     /* Just skip ADC and go to sleep */
     jump sleep_cycle
 
@@ -267,6 +667,385 @@ check_adc_timing:
     
     /* Run ADC on EVERY cycle (no modulo check) */
     jump adc_measure_and_check
+
+    /* Not in confirmation phase - check for new detection */
+    /* Calculate adaptive threshold based on battery behavior */
+    move r3, adaptive_threshold
+    ld r3, r3, 0              /* r3 = current adaptive threshold */
+
+    /* If no adaptive threshold set yet, use default */
+    move r2, 0
+    sub r2, r3, r2
+    jump use_adaptive_threshold, ov
+
+    /* Initialize adaptive threshold based on current voltage level */
+    move r3, last_result
+    ld r0, r3, 0              /* r0 = current reading */
+
+    /* Base threshold: higher for higher voltages, lower for lower voltages */
+    move r3, 50               /* Base threshold for low voltage */
+    move r2, 2000
+    sub r2, r0, r2
+    jump set_base_threshold, ov
+
+    move r3, 80               /* Base threshold for mid voltage */
+    move r2, 2400
+    sub r2, r0, r2
+    jump set_base_threshold, ov
+
+    move r3, 120              /* Base threshold for high voltage */
+
+set_base_threshold:
+    move r2, adaptive_threshold
+    st r3, r2, 0              /* Store initial adaptive threshold */
+
+use_adaptive_threshold:
+    /* Use pre-calculated |diff| from cum_change */
+    move r1, cum_change
+    ld r1, r1, 0              /* r1 = |diff| */
+
+    /* Apply adaptive threshold with voltage-based sensitivity */
+    move r3, last_result
+    ld r0, r3, 0              /* r0 = current reading */
+
+    /* Bucket 1: Very low battery - more sensitive */
+    move r3, 2000
+    sub r3, r0, r3
+    jump threshold_very_sensitive, ov
+
+    /* Bucket 2: High battery - less sensitive */
+    move r3, 2400
+    sub r3, r0, r3
+    jump threshold_less_sensitive, ov
+
+    /* Bucket 3: Normal range - use adaptive threshold */
+    move r3, adaptive_threshold
+    ld r3, r3, 0
+    jump threshold_check
+
+threshold_very_sensitive:
+    move r3, adaptive_threshold
+    ld r3, r3, 0
+    rsh r3, r3, 1             /* Half the adaptive threshold */
+    jump threshold_check
+
+threshold_less_sensitive:
+    move r3, adaptive_threshold
+    ld r3, r3, 0
+    lsh r3, r3, 1             /* Double the adaptive threshold */
+    jump threshold_check
+
+threshold_check:
+    /* r3 now contains adaptive threshold */
+    /* r1 already contains |diff| from cum_change */
+    sub r2, r1, r3                   /* r2 = |diff| - threshold */
+    jump no_detection, ov  /* if |diff| < threshold, not detect - FIX: jump to return point */
+    
+no_detection:
+    /* Gradually reduce adaptive threshold during normal operation */
+    /* This makes detection more sensitive when battery is stable */
+    move r3, adaptive_threshold
+    ld r0, r3, 0              /* r0 = current adaptive threshold */
+
+    /* Only adjust if threshold > minimum */
+    move r2, 25               /* Minimum threshold */
+    sub r2, r0, r2
+    jump no_threshold_adjust, ov
+
+    /* Reduce threshold by 1 (gradual adjustment) */
+    sub r0, r0, 1
+    st r0, r3, 0
+
+no_threshold_adjust:
+    /* Reload average for voltage level checks */
+    move r3, running_sum
+    ld r2, r3, 0
+    rsh r2, r2, ULP_ADC_HISTORY_SHIFT  /* r2 = current average */
+
+    /* Check for charging state change based on voltage level */
+    /* This detects gradual transitions that rapid change detection misses */
+    move r1, charging_active
+    ld r0, r1, 0
+    move r1, 0
+    sub r1, r0, r1
+    jump check_charging_stopped, ov  /* If charging_active == 0, check if should start charging */
+
+check_charging_started:
+    /* Check if voltage > threshold for charging */
+    move r0, 2200
+    sub r0, r2, r0
+    jump sleep_cycle, ov  /* If average <= 2200, no charging start */
+    
+    /* Set charging active flag */
+    move r1, charging_active
+    move r0, 1
+    st r0, r1, 0
+    
+    /* Trigger charging started */
+    move r2, ULP_BAT_STATUS_CHARGING_STARTED
+    jump set_charge_wake_status
+
+check_charging_stopped:
+    /* Check if voltage < threshold for charging stopped */
+    move r0, 2000
+    sub r0, r2, r0
+    jump sleep_cycle, ov  /* If average >= 2000, still charging */
+    
+    /* Clear charging active flag */
+    move r1, charging_active
+    move r0, 0
+    st r0, r1, 0
+    
+    /* Trigger charging stopped */
+    move r2, ULP_BAT_STATUS_CHARGING_STOPPED
+    jump set_charge_wake_status
+
+adc_check_thresholds:
+    /* Check running average < ADC_LOW_THR_VALUE (use avg for stability, not noisy last_result) */
+    move r3, running_sum
+    ld r0, r3, 0
+    rsh r0, r0, ULP_ADC_HISTORY_SHIFT  /* r0 = avg */
+    move r1, low_threshold   /* Direct immediate value, no RAM needed! */
+    ld r1, r1, 0
+    sub r0, r0, r1
+    jump low_battery_wake, ov
+
+    jump sleep_cycle
+
+    /* === DETECTION TRIGGERED - Start confirmation phase === */
+    jump start_new_detection
+
+start_new_detection:
+    /* Initialize confirmation phase */
+    move r1, detection_phase
+    move r0, 1
+    st r0, r1, 0                 /* detection_phase = 1 */
+
+    /* Store initial reading for confirmation */
+    move r1, confirmation_sum
+    move r0, 0
+    st r0, r1, 0                 /* confirmation_sum = 0 */
+
+    /* Store current reading as first confirmation sample */
+    move r1, last_result
+    ld r0, r1, 0
+    move r1, confirmation_sum
+    st r0, r1, 0                 /* confirmation_sum = current_reading */
+
+    /* Set confirmation count to 1 */
+    move r1, confirmation_count
+    move r0, 1
+    st r0, r1, 0
+
+    /* Store direction (positive = rise, negative = fall) */
+    move r3, last_result
+    ld r0, r3, 0              /* r0 = current reading */
+    move r3, running_sum
+    ld r2, r3, 0
+    rsh r2, r2, ULP_ADC_HISTORY_SHIFT  /* r2 = running average */
+    sub r1, r0, r2            /* r1 = current - average */
+    move r3, detection_direction
+    st r1, r3, 0              /* Store direction */
+
+    jump main_loop
+
+confirmation_complete:
+    /* Calculate average of confirmation samples */
+    move r1, confirmation_sum
+    ld r0, r1, 0              /* r0 = sum */
+    
+    /* Approximate division by 3: average ≈ (sum >> 2) + (sum >> 4) + (sum >> 6) */
+    move r2, r0
+    rsh r2, r2, 2             /* r2 = sum / 4 */
+    move r3, r0
+    rsh r3, r3, 4             /* r3 = sum / 16 */
+    add r2, r2, r3            /* r2 = sum/4 + sum/16 */
+    move r3, r0
+    rsh r3, r3, 6             /* r3 = sum / 64 */
+    add r2, r2, r3            /* r2 ≈ sum / 3 */
+    
+    move r1, confirmation_avg
+    st r2, r1, 0              /* Store confirmation average */
+
+    /* Compare with running average to confirm direction */
+    move r3, running_sum
+    ld r2, r3, 0
+    rsh r2, r2, ULP_ADC_HISTORY_SHIFT  /* r2 = running average */
+    sub r1, r0, r2            /* r1 = confirmation_avg - running_avg */
+
+    /* Check if direction matches initial detection */
+    move r3, detection_direction
+    ld r0, r3, 0              /* r0 = initial direction */
+    /* Check if both have same sign: (r0 >= 0 && r1 >= 0) || (r0 < 0 && r1 < 0) */
+    move r3, r0
+    rsh r3, r3, 15            /* r3 = sign bit of r0 (1 if negative, 0 if positive) */
+    move r2, r1
+    rsh r2, r2, 15            /* r2 = sign bit of r1 (1 if negative, 0 if positive) */
+    sub r3, r3, r2            /* r3 = 0 if signs match, non-zero if different */
+    jump confirmation_passed, eq  /* If signs match, confirmation passed */
+
+    /* Direction changed - reset detection */
+    jump confirmation_failed
+
+set_charge_wake_status:
+    /* For CHARGING_STOPPED, check if charging is actually active */
+    move r0, ULP_BAT_STATUS_CHARGING_STOPPED
+    sub r0, r2, r0
+    jump check_charging_active, eq
+    
+    /* For CHARGING_STARTED, charging_active is already set in confirmation_passed */
+    jump anti_spam_check
+
+check_charging_active:
+    /* Check if charging is currently active */
+    move r1, charging_active
+    ld r0, r1, 0
+    move r1, 0
+    sub r1, r0, r1
+    jump sleep_cycle, eq              /* Skip if charging not active */
+    
+    /* Clear charging active flag */
+    move r1, charging_active
+    move r0, 0
+    st r0, r1, 0
+    
+anti_spam_check:
+    /* Check if main CPU is running - if so, allow status updates without anti-spam */
+    move r1, main_cpu_running
+    ld r0, r1, 0
+    move r1, 0
+    sub r1, r0, r1
+    jump take_snapshot, eq  /* Skip anti-spam if main CPU is running */
+    
+    /* Anti-spam check - only when main CPU is not running */
+    move r1, last_wake_status
+    ld r3, r1, 0
+    and r3, r3, ULP_WAKE_CURRENT_ADC_MASK
+    rsh r3, r3, ULP_WAKE_CURRENT_ADC_SHIFT
+    
+    sub r0, r2, r3
+    jump sleep_cycle, eq              /* Skip if same reason */
+    
+take_snapshot:
+    /* Take snapshot of current state before waking/updating */
+    /* Pass wake reason in r0 and return label index in r3 */
+    move r0, r2
+    move r3, 1  /* Return to snapshot_return_1 */
+    jump take_snapshot_routine
+
+confirmation_passed:
+    /* Set snapshot variables for main CPU decision confirmations */
+    move r3, confirmation_avg
+    ld r0, r3, 0              /* r0 = confirmed average */
+    move r3, snapshot_confirmation_avg
+    st r0, r3, 0              /* snapshot_confirmation_avg = confirmation_avg */
+
+    move r3, running_sum
+    ld r0, r3, 0
+    rsh r0, r0, ULP_ADC_HISTORY_SHIFT  /* r0 = running average (baseline) */
+    move r3, snapshot_baseline_avg
+    st r0, r3, 0              /* snapshot_baseline_avg = running_avg */
+
+    /* Update adaptive threshold based on successful detection */
+    move r3, cum_change
+    ld r0, r3, 0              /* r0 = magnitude of change that triggered detection */
+
+    /* Calculate new adaptive threshold: current_threshold + (change_magnitude / 4) */
+    /* This makes threshold more sensitive to similar changes */
+    move r3, adaptive_threshold
+    ld r2, r3, 0              /* r2 = current adaptive threshold */
+    rsh r0, r0, 2             /* r0 = change_magnitude / 4 */
+    add r2, r2, r0            /* r2 = new adaptive threshold */
+
+    /* Prevent threshold from becoming too sensitive (min 20) or insensitive (max 200) */
+    move r0, 20
+    sub r0, r2, r0
+    jump threshold_too_low, ov
+    move r0, 200
+    sub r0, r2, r0
+    jump threshold_too_high, ov
+    jump store_new_threshold
+
+threshold_too_low:
+    move r2, 20
+    jump store_new_threshold
+
+threshold_too_high:
+    move r2, 200
+
+store_new_threshold:
+    move r3, adaptive_threshold
+    st r2, r3, 0              /* Store updated adaptive threshold */
+
+    /* Direction confirmed - determine wake reason */
+    move r3, detection_direction
+    ld r1, r3, 0              /* r1 = direction */
+
+    jump confirmation_fall_detected, ov  /* If negative, fall detected */
+
+    /* Rise detected - set charging active flag */
+    move r1, charging_active
+    move r0, 1
+    st r0, r1, 0              /* charging_active = 1 */
+    move r2, ULP_BAT_STATUS_CHARGING_STARTED
+    jump set_charge_wake_status
+
+confirmation_fall_detected:
+    /* Check if this is low battery or charging stopped */
+    move r3, running_sum
+    ld r2, r3, 0
+    rsh r2, r2, ULP_ADC_HISTORY_SHIFT
+    move r0, 2100
+    sub r0, r2, r0
+    jump low_battery_wake, ov
+
+    /* Rapid change fall - CHARGING_STOPPED */
+    move r2, ULP_BAT_STATUS_CHARGING_STOPPED
+    jump set_charge_wake_status
+
+confirmation_failed:
+    /* Reset all detection and confirmation variables */
+    move r1, detection_phase
+    move r0, 0
+    st r0, r1, 0
+    
+    move r1, confirmation_sum
+    st r0, r1, 0
+    
+    move r1, confirmation_count
+    st r0, r1, 0
+    
+    move r1, confirmation_avg
+    st r0, r1, 0
+    
+    move r1, detection_direction
+    st r0, r1, 0
+    
+    jump main_loop
+low_battery_wake:
+    /* Check if same as last wake reason (anti-spam) - OPTIMIZED! */
+    move r1, last_wake_status
+    ld r2, r1, 0
+    and r2, r2, ULP_WAKE_CURRENT_ADC_MASK
+    rsh r2, r2, ULP_WAKE_CURRENT_ADC_SHIFT
+    
+    /* If last reason is NONE (0), always wake - this is first wake */
+    jump adc_low_set_wake, eq
+    
+    /* Get current ADC reason (we know it's LOW_THR=1) */
+    move r3, ULP_BAT_STATUS_CRITICAL_LOW
+    
+    /* Compare with last */
+    sub r0, r3, r2
+    jump sleep_cycle, eq       /* Skip only if same non-zero reason */
+    
+adc_low_set_wake:
+    /* Take snapshot of current state before waking */
+    /* Pass wake reason in r0 and return label index in r3 */
+    move r0, ULP_BAT_STATUS_CRITICAL_LOW
+    move r3, 2  /* Return to snapshot_return_2 */
+    jump take_snapshot_routine
+#endif
 
 #if CONFIG_ULP_BUTTON_ENABLED
 button_long_press_detected:
@@ -289,630 +1068,3 @@ button_long_press_detected:
     st r2, r1, 0
     jump wake_main_cpu
 #endif
-
-/* ========================================================================== */
-/* BATTERY SENSING CODE - EXACTLY FROM YOUR TESTED battery_sensing.S */
-/* ========================================================================== */
-
-adc_measure_and_check:
-    /* Check if we already have a wake event pending - if so, FREEZE all ADC processing */
-    move r1, curr_wake_status
-    ld r2, r1, 0
-    and r3, r2, ULP_WAKE_CURRENT_SOURCE_MASK
-    move r0, 0
-    sub r0, r3, r0  /* Check if source != 0 */
-    jump adc_frozen, ov  /* If wake source is set (non-zero), skip all ADC processing */
-
-    /* === ADC MEASUREMENT === */
-    /* Delay to stabilize ADC */
-    move r0, ADC_STABILIZATION_DELAY
-adc_delay:
-    sub r0, r0, 1
-    jump adc_delay, ov
-
-    /* Read ADC with oversampling */
-    move r0, 0
-    stage_rst
-adc_read_loop:
-    adc r1, 0, adc_channel + 1
-    add r0, r0, r1
-    stage_inc 1
-    jumps adc_read_loop, adc_oversampling_factor, lt
-
-    rsh r0, r0, adc_oversampling_factor_log
-
-    and r0, r0, 0xFFF
-    
-    /* Now store clean ADC value */
-    move r1, last_result
-    st r0, r1, 0
-
-    /* Validate ADC reading - skip if reading seems invalid (too low or too high) */
-    move r1, 500   /* Minimum valid reading */
-    sub r1, r0, r1
-    jump adc_exit, ov  /* Jump if reading < 500 */
-    
-    move r1, 3500  /* Maximum valid reading */
-    sub r1, r1, r0
-    jump adc_exit, ov  /* Jump if reading > 3500 */
-
-#if CONFIG_ULP_BATTERY_MONITORING_ENABLED
-    /* Store current reading */
-    move r1, last_result
-    st r0, r1, 0
-    
-    /* 1. Get current index value */
-    move r1, history_idx       /* r1 = address of index var */
-    ld r2, r1, 0                   /* r2 = index value (0-3) */
-    
-    /* 2. ALWAYS subtract old value from running sum (even if buffer not full, we'll add it back) */
-    /* Get old value at current index */
-    move r1, history           /* r1 = array base */
-    add r1, r1, r2                 /* r1 = &history[index] */
-    ld r0, r1, 0                   /* r0 = old value at this index */
-    
-    /* Subtract from running sum */
-    move r1, running_sum
-    ld r3, r1, 0                   /* r3 = current running_sum */
-    sub r3, r3, r0                 /* running_sum -= old_value */
-    st r3, r1, 0                   /* store updated sum */
-    /* 3. Add new ADC value to running sum */
-    move r1, last_result
-    ld r0, r1, 0                   /* r0 = new ADC value */
-    move r1, running_sum
-    ld r3, r1, 0                   /* r3 = current running_sum */
-    add r3, r3, r0                 /* running_sum += new_value */
-    st r3, r1, 0                   /* store updated sum */
-    
-    /* 4. Store new ADC value in array at current index */
-    move r1, history_idx
-    ld r2, r1, 0                   /* r2 = current index */
-    move r3, history           /* r3 = array base */
-    lsh r1, r2, 0                  /* r1 = index * 1 (word addressing) */
-    add r3, r3, r1                 /* r3 = &history[index] */
-    move r1, last_result
-    ld r0, r1, 0                   /* r0 = new ADC value */
-    st r0, r3, 0                   /* Store in array */
-    
-    /* 5. Advance index: (index + 1) % ADC_HISTORY_SIZE */
-    move r1, history_idx
-    ld r2, r1, 0                   /* r2 = current index */
-    add r2, r2, 1                  /* index + 1 */
-    move r3, (ADC_HISTORY_SIZE-1) /* FIX: 7 for size 8 */
-    and r2, r2, r3                 /* wrap 0-7 */
-    st r2, r1, 0                   /* store new index */
-    
-    /* 6. Only process if we have at least ADC_HISTORY_SIZE samples (cycle_count >= 4) */
-    move r1, cycle_count
-    ld r2, r1, 0
-    move r3, ADC_HISTORY_SIZE
-    sub r0, r2, r3
-    jump adc_exit, ov              /* Skip if cycle_count < ADC_HISTORY_SIZE */
-    
-    jump adc_calc_running_avg
-
-/* Simple voltage-based adaptive thresholds */
-adc_get_simple_adaptive_threshold:
-    move r1, last_result
-    ld r0, r1, 0
-    
-    /* Bucket 1: Very low battery < ~3.6V (raw < 2000) - most sensitive */
-    move r1, 2000  
-    sub r1, r0, r1
-    jump very_sensitive, ov
-    
-    /* Bucket 2: High battery > ~4.1V (raw > 2400) - least sensitive */  
-    move r1, 2400
-    sub r1, r0, r1
-    jump less_sensitive, ov
-    
-    /* Bucket 3: Normal range (default sensitivity) */
-    move r0, ADC_RAPID_CHG_THR_VALUE
-    jump threshold_done
-    
-very_sensitive:
-    move r0, ADC_RAPID_CHG_THR_VALUE
-    rsh r0, r0, 1  /* Divide by 2 */
-    add r0, r0, ADC_RAPID_CHG_THR_VALUE
-    rsh r0, r0, 2  /* Approximately ×0.75 */
-    jump threshold_done
-    
-less_sensitive:
-    move r0, ADC_RAPID_CHG_THR_VALUE
-    lsh r0, r0, 1  /* Multiply by 2 */
-    add r0, r0, ADC_RAPID_CHG_THR_VALUE
-    rsh r0, r0, 2  /* Approximately ×1.25 */
-    
-threshold_done:
-    /* r0 now contains adaptive threshold */
-    /* In ULP, we can't return properly, so caller must handle this */
-    /* We'll use r3 to pass the threshold back */
-    move r3, r0
-    
-    /* Since we can't return, we need to jump back to a known point */
-    /* This is a limitation of ULP - we have to inline or use fixed return points */
-    jump adc_threshold_return
-
-/* Enhanced detection with inline threshold calculation */
-adc_check_rapid_change_enhanced:
-    /* Get running average (baseline) */
-    move r1, running_sum
-    ld r2, r1, 0
-    rsh r2, r2, ULP_ADC_HISTORY_SHIFT  /* baseline_avg */
-    
-    /* Get current reading */
-    move r1, last_result
-    ld r0, r1, 0
-    
-    /* Calculate difference from baseline */
-    sub r1, r0, r2            /* diff = current - baseline_avg */
-    
-    /* === INLINE THRESHOLD CALCULATION === */
-    move r3, last_result
-    ld r0, r3, 0
-    
-    /* Bucket 1: Very low battery */
-    move r3, 2000  
-    sub r3, r0, r3
-    jump threshold_very_sensitive, ov
-    
-    /* Bucket 2: High battery */  
-    move r3, 2400
-    sub r3, r0, r3
-    jump threshold_less_sensitive, ov
-    
-    /* Bucket 3: Normal range */
-    move r3, ADC_RAPID_CHG_THR_VALUE
-    jump threshold_check
-    
-threshold_very_sensitive:
-    move r3, ADC_RAPID_CHG_THR_VALUE
-    rsh r3, r3, 1
-    add r3, r3, ADC_RAPID_CHG_THR_VALUE
-    rsh r3, r3, 2  /* ×0.75 */
-    jump threshold_check
-    
-threshold_less_sensitive:
-    move r3, ADC_RAPID_CHG_THR_VALUE
-    lsh r3, r3, 1
-    add r3, r3, ADC_RAPID_CHG_THR_VALUE
-    rsh r3, r3, 2  /* ×1.25 */
-    
-threshold_check:
-    /* r3 now contains adaptive threshold */
-    /* Continue with detection logic */
-    sub r1, r1, r3
-    jump potential_charge_event, ov  /* If diff >= threshold */
-    
-    jump check_confirmation_phase
-
-adc_threshold_return:
-    /* This is where the threshold function would return to */
-    /* But since we inlined it, we don't need this anymore */
-    jump adc_exit
-
-potential_charge_event:
-    /* === PHASE 1: Detection - save state and take snapshot === */
-    move r1, detection_phase
-    move r2, 1
-    st r2, r1, 0                  /* Set phase = 1 (waiting confirmation) */
-    
-    move r1, detection_start_idx
-    move r2, history_idx
-    ld r2, r2, 0
-    st r2, r1, 0                  /* Save starting index */
-    
-    move r1, baseline_avg
-    move r2, running_sum
-    ld r2, r2, 0
-    rsh r2, r2, ULP_ADC_HISTORY_SHIFT
-    st r2, r1, 0                  /* Save baseline average */
-    
-    /* Determine direction */
-    move r1, detection_direction
-    move r2, 0
-    sub r2, r0, r2                /* Check if current > 0 (always true) */
-    jump set_rise_direction, ov
-set_rise_direction:
-    move r2, 1                    /* 1 = rise */
-    st r2, r1, 0                  /* Save direction */
-    
-    /* Take snapshot at detection moment */
-    jump write_detection_snapshot
-    
-    jump adc_exit
-
-/* Check if we're in confirmation phase */
-check_confirmation_phase:
-    move r1, detection_phase
-    ld r0, r1, 0
-    move r1, 1
-    sub r1, r0, r1
-    jump do_confirmation_check, eq  /* If phase == 1 */
-    jump adc_exit
-
-do_confirmation_check:
-    /* === PHASE 2: Confirmation (2-3 readings later) === */
-    move r1, detection_start_idx
-    ld r2, r1, 0
-    
-    /* Check if we have 2 new readings since detection */
-    move r1, history_idx
-    ld r0, r1, 0
-    sub r1, r0, r2                /* cycles_since_detection */
-    and r1, r1, (ADC_HISTORY_SIZE-1)
-    
-    move r0, 2                    /* Require 2 new readings (400ms) */
-    sub r1, r1, r0
-    jump adc_exit, ov             /* Not enough readings yet */
-    
-    /* Calculate average of 2 confirmation readings */
-    move r0, 0                    /* sum = 0 */
-    move r1, 2                    /* count = 2 */
-    
-    /* Start from detection index + 1 */
-    move r2, detection_start_idx
-    ld r2, r2, 0
-    add r2, r2, 1
-    and r2, r2, (ADC_HISTORY_SIZE-1)
-    
-confirmation_sum_loop:
-    move r3, history
-    add r3, r3, r2
-    ld r3, r3, 0                  /* reading at index */
-    add r0, r0, r3                /* sum += reading */
-    
-    /* Next index */
-    add r2, r2, 1
-    and r2, r2, (ADC_HISTORY_SIZE-1)
-    
-    sub r1, r1, 1
-    jump confirmation_sum_loop, ov /* Loop 2 times */
-    
-    /* Calculate confirmation average: sum / 2 */
-    rsh r0, r0, 1                 /* Efficient divide by 2 */
-    
-    /* Compare with baseline */
-    move r1, baseline_avg
-    ld r3, r1, 0
-    sub r1, r0, r3                /* confirmation_avg - baseline_avg */
-    
-    /* Get threshold */
-    jump adc_get_simple_adaptive_threshold
-    /* r3 = threshold */
-    
-    /* Check direction and threshold */
-    move r2, detection_direction
-    ld r2, r2, 0
-    move r0, 0
-    sub r0, r2, r0
-    jump check_rise_confirmation, eq  /* If direction = rise */
-    
-check_fall_confirmation:
-    /* For fall: confirmation_avg should be below baseline - threshold */
-    add r1, r1, r3                /* diff + threshold */
-    jump confirmation_failed, ov   /* If diff > -threshold, failed */
-    jump confirmation_passed
-    
-check_rise_confirmation:  
-    /* For rise: confirmation_avg should be above baseline + threshold */
-    sub r1, r1, r3
-    jump confirmation_failed, ov   /* If diff < threshold, failed */
-    /* fall through to confirmation_passed */
-
-confirmation_passed:
-    /* === CONFIRMED! Trigger wake === */
-    move r1, detection_phase
-    move r2, 0
-    st r2, r1, 0                  /* Reset phase */
-    
-    /* Set wake reason based on direction */
-    move r2, detection_direction
-    ld r2, r2, 0
-    move r0, 0
-    sub r0, r2, r0
-    jump trigger_charge_start, eq
-    
-trigger_charge_stop:
-    move r2, ULP_WAKE_STATUS_ADC_RAPID_FALL
-    jump set_charge_wake_status
-
-trigger_charge_start:
-    move r2, ULP_WAKE_STATUS_ADC_RAPID_RISE
-    /* fall through */
-
-set_charge_wake_status:
-    /* Anti-spam check */
-    move r1, last_wake_status
-    ld r3, r1, 0
-    and r3, r3, ULP_WAKE_CURRENT_ADC_MASK
-    rsh r3, r3, ULP_WAKE_CURRENT_ADC_SHIFT
-    
-    sub r0, r2, r3
-    jump adc_exit, eq              /* Skip if same reason */
-    
-    /* Set wake status */
-    move r1, curr_wake_status
-    ld r3, r1, 0
-    move r1, last_wake_status
-    st r3, r1, 0
-    
-    move r1, curr_wake_status
-    st r2, r1, 0
-    jump write_snapshot_and_wake
-
-confirmation_failed:
-    /* Reset detection phase */
-    move r1, detection_phase
-    move r2, 0
-    st r2, r1, 0
-    jump adc_exit
-
-/* Take snapshot at detection moment (not confirmation) */
-write_detection_snapshot:
-    /* Save standard ULP state */
-    move r3, snapshot_running_sum
-    move r1, running_sum
-    ld r0, r1, 0
-    st r0, r3, 0
-
-    move r3, snapshot_history_idx
-    move r1, history_idx
-    ld r0, r1, 0
-    st r0, r3, 0
-
-    move r3, snapshot_cycle_count
-    move r1, cycle_count
-    ld r0, r1, 0
-    st r0, r3, 0
-
-    move r3, snapshot_last_result
-    move r1, last_result
-    ld r0, r1, 0
-    st r0, r3, 0
-
-    /* Save detection-specific data */
-    move r3, snapshot_detection_start_idx
-    move r1, detection_start_idx
-    ld r0, r1, 0
-    st r0, r3, 0
-
-    move r3, snapshot_baseline_avg
-    move r1, baseline_avg
-    ld r0, r1, 0
-    st r0, r3, 0
-
-    move r3, snapshot_detection_direction
-    move r1, detection_direction
-    ld r0, r1, 0
-    st r0, r3, 0
-
-    /* Mark snapshot as valid */
-    move r3, snapshot_valid
-    move r0, 1
-    st r0, r3, 0
-
-    jump adc_exit  /* Return from function */
-
-adc_calc_running_avg:
-    /* Calculate running average: running_sum / 8 */
-    /* This mimics the main processor's efficient approach */
-    move r1, running_sum
-    ld r2, r1, 0                   /* r2 = running_sum */
-    
-    /* Calculate average (divide by ULP_ADC_HISTORY_SHIFT) */
-    rsh r2, r2, ULP_ADC_HISTORY_SHIFT  /* r2 = running_sum / 8 */
-
-    /* CRITICAL: Don't check rapid change on cold start (when history buffer not yet filled)
-     * If cycle_count < HISTORY_SIZE, we don't have enough data for accurate comparison
-     * Comparing against zeros or partial data causes false triggers! */
-    move r1, cycle_count
-    ld r0, r1, 0
-    move r1, ULP_ADC_HISTORY_SIZE
-    sub r0, r0, r1                 /* r0 = cycle_count - HISTORY_SIZE */
-    jump adc_check_thresholds, ov  /* If cycle_count < HISTORY_SIZE, skip rapid change check */
-
-    /* Calculate absolute difference between current reading and running average */
-    /* This detects RAPID changes, not cumulative drift */
-    move r3, last_result
-    ld r0, r3, 0              /* r0 = last_result (current reading) */
-    
-    /* Calculate absolute difference: |last_result - average| */
-    sub r1, r0, r2            /* r1 = last_result - average */
-    jump adc_positive_diff, ov /* Jump if negative (overflow) */
-    jump adc_store_diff       /* Already positive, store it */
-    
-adc_positive_diff:
-    sub r1, r2, r0            /* r1 = average - last_result (make positive) */
-    
-adc_store_diff:
-    /* r1 now contains absolute difference */
-    move r3, cum_change
-    st r1, r3, 0
-
-    /* OLD: Direct threshold check */
-    /* move r3, cum_change
-    ld r0, r3, 0
-    move r1, ADC_RAPID_CHG_THR_VALUE
-    sub r0, r0, r1
-    jump adc_rapid_change_triggered, eq
-    jump adc_rapid_change_triggered, ov
-    jump adc_check_thresholds */
-
-    /* NEW: Enhanced detection */
-    jump adc_check_rapid_change_enhanced
-    
-    /* Continue to low threshold check */
-    jump adc_check_thresholds
-
-#endif
-
-adc_check_thresholds:
-    /* Check last_result < ADC_LOW_THR_VALUE (compile-time constant) */
-    move r3, last_result
-    ld r0, r3, 0
-    move r1, low_threshold   /* Direct immediate value, no RAM needed! */
-    ld r1, r1, 0
-    sub r0, r0, r1
-    jump adc_low_threshold_triggered, ov
-
-    jump adc_exit
-
-adc_frozen:
-    /* ADC is frozen because wake is already set - just sleep */
-    jump sleep_cycle
-
-adc_exit:
-    jump sleep_cycle
-
-adc_low_threshold_triggered:
-    /* Check if same as last wake reason (anti-spam) - OPTIMIZED! */
-    move r1, last_wake_status
-    ld r2, r1, 0
-    and r2, r2, ULP_WAKE_CURRENT_ADC_MASK
-    rsh r2, r2, ULP_WAKE_CURRENT_ADC_SHIFT
-    
-    /* If last reason is NONE (0), always wake - this is first wake */
-    jump adc_low_set_wake, eq
-    
-    /* Get current ADC reason (we know it's LOW_THR=1) */
-    move r3, ULP_ADC_WAKE_LOW_THR
-    
-    /* Compare with last */
-    sub r0, r3, r2
-    jump adc_exit, eq       /* Skip only if same non-zero reason */
-    
-adc_low_set_wake:
-    /* Copy current to last (single load/store) */
-    move r1, curr_wake_status
-    ld r2, r1, 0
-    move r1, last_wake_status
-    st r2, r1, 0
-    
-    /* Set current status - preprocessor-calculated from container macro! */
-    move r2, ULP_WAKE_STATUS_ADC_LOW_THR         /* Auto-generated: (ADC | (LOW_THR << 2)) = 0x05 */
-    move r1, curr_wake_status
-    st r2, r1, 0
-
-#if CONFIG_ULP_MAD_ENABLED
-    /* For low-battery wake we skip MAD computation to save cycles.
-     * Explicitly set snapshot_mad=0 and snapshot_state to LOW_THR. */
-    move r1, 0
-    move r2, ULP_WAKE_STATUS_ADC_LOW_THR
-#endif
-    jump write_snapshot_and_wake
-
-#if CONFIG_ULP_BATTERY_MONITORING_ENABLED
-adc_rapid_change_triggered:
-    /* Check if same as last wake reason (anti-spam) - OPTIMIZED! */
-    move r1, last_wake_status
-    ld r2, r1, 0
-    and r2, r2, ULP_WAKE_CURRENT_ADC_MASK
-    rsh r2, r2, ULP_WAKE_CURRENT_ADC_SHIFT
-    
-    /* If last reason is NONE (0), always wake - this is first wake */
-    jump adc_rapid_set_wake, eq
-    
-    /* Get current ADC reason (we know it's RAPID_CHG=3) */
-    move r3, ULP_ADC_WAKE_RAPID_CHG
-    
-    /* Compare with last */
-    sub r0, r3, r2
-    jump adc_exit, eq       /* Skip only if same non-zero reason */
-    
-adc_rapid_set_wake:
-    /* Copy current to last (single load/store) */
-    move r1, curr_wake_status
-    ld r2, r1, 0
-    move r1, last_wake_status
-    st r2, r1, 0
-    
-    /* Set current status - preprocessor-calculated from container macro! */
-    move r2, ULP_WAKE_STATUS_ADC_RAPID_CHG       /* Auto-generated: (ADC | (RAPID_CHG << 2)) = 0x09 */
-    move r1, curr_wake_status
-    st r2, r1, 0
-
-    /* Compute MAD over history if buffer is full and set snapshot_state in r2,
-     * put computed MAD in r1 then branch to common writer. */
-    move r1, cycle_count
-    ld r2, r1, 0
-    move r3, ADC_HISTORY_SIZE
-    sub r0, r2, r3
-    /* MAD computation removed for ULP (register/instruction limits). Fall through
-     * to the skip path which writes snapshot_mad=0 and snapshot_state. */
-
-#if CONFIG_ULP_MAD_ENABLED
-    /* Skip computing MAD on rapid-change too (ULP register and instruction limits).
-     * Set snapshot_mad=0 and set state to RAPID_CHG. CPU will compute MAD if needed. */
-    move r1, 0
-    move r2, ULP_WAKE_STATUS_ADC_RAPID_CHG
-#endif
-    jump write_snapshot_and_wake
-
-/* Common snapshot writer: expects
- *  r1 = snapshot_mad (or computed MAD),
- *  r2 = snapshot_state (ULP wake status)
- * Writes running_sum/history_idx/cycle_count/last_result, then snapshot_mad/state, then sets snapshot_valid and wakes CPU.
- */
-write_snapshot_and_wake:
-    /* Use only r0..r3. r1/r2 hold snapshot_mad/snapshot_state on entry. */
-    /* running_sum -> snapshot_running_sum */
-    move r3, running_sum
-    ld r0, r3, 0
-    move r3, snapshot_running_sum
-    st r0, r3, 0
-
-    /* history_idx -> snapshot_history_idx */
-    move r3, history_idx
-    ld r0, r3, 0
-    move r3, snapshot_history_idx
-    st r0, r3, 0
-
-    /* cycle_count -> snapshot_cycle_count */
-    move r3, cycle_count
-    ld r0, r3, 0
-    move r3, snapshot_cycle_count
-    st r0, r3, 0
-
-    /* last_result -> snapshot_last_result */
-    move r3, last_result
-    ld r0, r3, 0
-    move r3, snapshot_last_result
-    st r0, r3, 0
-
-#if CONFIG_ULP_MAD_ENABLED
-    /* r1 contains MAD (if computed), write it to snapshot_mad */
-    move r3, snapshot_mad
-    st r1, r3, 0
-
-    /* r2 contains the snapshot state enum */
-    move r3, snapshot_state
-    st r2, r3, 0
-#endif
-
-    move r3, snapshot_valid
-    move r0, 1
-    st r0, r3, 0
-
-    jump wake_main_cpu
-#endif
-
-/* Common wakeup handler for both ADC and button */
-wake_main_cpu:
-    /* Wake up the main CPU */
-    wake  /* Wake main CPU */
-    /* HALT the ULP after waking - main CPU will restart us */
-    halt  /* Stop ULP execution - main CPU must restart with start_ulp_program() */
-
-sleep_cycle:
-    /* Never clear wake_data once set - only main CPU can clear it via entry point */
-    /* Wait for configured delay using loop (wait instruction limited to 16-bit) */
-    stage_rst
-    stage_inc WAIT_ITERATIONS
-
-wait_loop:
-    wait WAIT_TICKS_PER_ITER
-    stage_dec 1
-    jumps wait_loop, 1, ge  /* Continue if stage >= 1 */
-    
-    jump main_loop

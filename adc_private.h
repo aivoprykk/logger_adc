@@ -19,6 +19,8 @@ extern "C" {
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 
+#include "ulp_program.h"
+
 
 #if (defined(CONFIG_LOGGER_USE_GLOBAL_LOG_LEVEL) && CONFIG_LOGGER_GLOBAL_LOG_LEVEL < CONFIG_LOGGER_ADC_LOG_LEVEL)
 #define C_LOG_LEVEL CONFIG_LOGGER_GLOBAL_LOG_LEVEL
@@ -59,11 +61,17 @@ extern uint32_t ulp_button_last_result;
 #define ulp_button_last_result_set(val) (ulp_button_last_result = (val) & 0x1)
 #endif
 #ifdef CONFIG_ULP_BATTERY_MONITORING_ENABLED
-extern uint32_t ulp_cum_change;            /* Only lower 16 bits used */
-extern uint32_t ulp_history[ULP_ADC_HISTORY_SIZE];  /* Each: only lower 12 bits used */
-extern uint32_t ulp_history_idx;       /* Only lower 16 bits used */
-extern uint32_t ulp_running_sum;           /* Full 32 bits used */
-extern uint32_t ulp_cum_change;     /* Full 32 bits used */
+// extern uint32_t ulp_cum_change;            /* Only lower 16 bits used */
+// extern uint32_t ulp_history[ULP_ADC_HISTORY_SIZE];  /* Each: only lower 12 bits used */
+// extern uint32_t ulp_history_idx;       /* Only lower 16 bits used */
+// extern uint32_t ulp_running_sum;           /* Full 32 bits used */
+// extern uint32_t ulp_cum_change;     /* Full 32 bits used */
+// extern uint32_t ulp_detection_phase;
+// extern uint32_t ulp_detection_start_idx;
+// extern uint32_t ulp_baseline_avg;
+// extern uint32_t ulp_detection_direction;
+// extern uint32_t ulp_confirmation_sum;
+
 typedef struct {
     uint32_t running_sum;    // ULP running_sum word
     uint32_t history_idx;    // ulp_history_idx (next write index)
@@ -94,6 +102,9 @@ typedef struct {
 #define SNAPSHOT_HAS_MAD(snap) ((snap)->flags != 0)
 #define SNAPSHOT_SET_MAD_FLAG(snap) do { (snap)->flags = 1; } while(0)
 #define SNAPSHOT_CLEAR_MAD_FLAG(snap) do { (snap)->flags = 0; } while(0)
+#define SNAPSHOT_HAS_STATE(snap) ((snap)->flags != 0)
+#define SNAPSHOT_SET_STATE(snap) do { (snap)->flags = 1; } while(0)
+#define SNAPSHOT_CLEAR_STATE(snap) do { (snap)->flags = 0; } while(0)
 #endif
 /* Generic ADC snapshot type used by both ULP and non-ULP codepaths.
  * When ULP mode is enabled this is identical to ulp_history_snapshot_t.
@@ -329,6 +340,31 @@ bool ulp_history_snapshot_take(ulp_history_snapshot_t *out, bool compute_mad, in
  * - max_retries: how many times to try reading a consistent snapshot when ULP is running
  * Returns true if snapshot contains at least one valid sample. */
 bool adc_snapshot_take(adc_snapshot_t *out, bool compute_mad, int max_retries);
+
+void ulp_get_three_samples(uint32_t *current, uint32_t *prev1, uint32_t *prev2);
+
+void compute_and_store_ulp_thresholds(uint32_t desired_batt_mv);
+void debug_ulp_status(void);
+
+// Snapshot accessor functions for confirmed values
+uint32_t ulp_get_snapshot_confirmation_avg(void);
+uint32_t ulp_get_snapshot_baseline_avg(void);
+
+// History snapshot accessor functions
+bool adc_ulp_is_snapshot_valid(void);
+uint32_t adc_ulp_get_snapshot_running_sum(void);
+uint32_t adc_ulp_get_snapshot_history_idx(void);
+uint32_t adc_ulp_get_snapshot_cycle_count(void);
+uint32_t adc_ulp_get_snapshot_valid_count(void);
+uint32_t adc_ulp_get_snapshot_history_avg(void);
+uint32_t adc_ulp_get_snapshot_last_sample(void);
+uint32_t adc_ulp_get_snapshot_cum_change(void);
+uint32_t adc_ulp_get_snapshot_mad(void);
+uint32_t adc_ulp_get_snapshot_state(void);
+
+// History snapshot control functions
+bool adc_ulp_take_history_snapshot(uint32_t snapshot_state);
+
 #endif
 
 #define ADC_UPDATE_INTERVAL_MS CONFIG_ADC_CYCLE_TIME_MS
