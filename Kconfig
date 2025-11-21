@@ -21,6 +21,16 @@ menu "Logger ADC Module Options"
             Note: Ensure a voltage divider is connected to the selected ADC channel
             to step down battery voltage within ADC input range.
 
+    if ULP_BATTERY_MONITORING_ENABLED
+    config ULP_ADAPTIVE_DELTA_PLATEAU
+        bool "Use adaptive delta + plateau charging detection"
+        default y
+        help
+            Use advanced state machine algorithm for battery charging detection.
+            Analyzes charging curve shapes rather than absolute voltage levels.
+            More robust against WiFi noise and battery variations, but uses more ULP memory.
+    endif
+
     config ULP_BUTTON_ENABLED
         bool "Enable ULP button monitoring"
         default y
@@ -90,8 +100,6 @@ menu "Logger ADC Module Options"
         default LOGGER_ADC_MODE_ONESHOT
         help
             Specify the ADC mode to use.
-        config LOGGER_ADC_MODE_CONTINUOUS
-            bool "Continuous mode"
         config LOGGER_ADC_MODE_ONESHOT
             bool "One-shot mode"
         if ULP_BATTERY_MONITORING_ENABLED

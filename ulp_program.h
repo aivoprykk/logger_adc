@@ -1,62 +1,67 @@
 #ifndef F478CF77_DF17_4B41_970F_52702B05EC89
 #define F478CF77_DF17_4B41_970F_52702B05EC89
 
-#include "ulp_hardware.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-// #include "ulp_battery.h"
-/* ULP snapshot symbols (defined in ULP RTC fast memory by adc.S)
- * The ULP build embeds these labels and the component tooling exposes them
- * to the main firmware with an "ulp_" prefix (e.g. running_sum -> ulp_running_sum).
- * Use the ulp_snapshot_* names here so the C linker sees the symbols. */
-extern uint32_t ulp_curr_wake_status;
-extern uint32_t ulp_last_wake_status;
-extern uint32_t ulp_cycle_count;
-extern uint32_t ulp_history_idx;
-extern uint32_t ulp_last_result;
-extern uint32_t ulp_running_sum;
-extern uint32_t ulp_charging_active;
-extern uint32_t ulp_adaptive_threshold;
-extern uint32_t ulp_history[ULP_ADC_HISTORY_SIZE];  /* Each: only lower 12 bits used */
-extern uint32_t ulp_cum_change;            /* Only lower 16 bits used */
-extern uint32_t ulp_main_cpu_running;
+#include "sdkconfig.h"
+#include "adc_private_defs.h"
 
-/* Snapshot variables for main CPU decision confirmations */
-extern uint32_t ulp_snapshot_confirmation_avg;
-extern uint32_t ulp_snapshot_baseline_avg;
+#ifdef ULP_MODE
+#include "stdint.h"
 
-/* History snapshot variables for main CPU access */
-extern uint32_t ulp_snapshot_running_sum;
-extern uint32_t ulp_snapshot_history_idx;
-extern uint32_t ulp_snapshot_cycle_count;
-extern uint32_t ulp_snapshot_valid_count;
-extern uint32_t ulp_snapshot_history_avg;
-extern uint32_t ulp_snapshot_last_sample;
-extern uint32_t ulp_snapshot_cum_change;
-extern uint32_t ulp_snapshot_mad;
-extern uint32_t ulp_snapshot_state;
-extern uint32_t ulp_snapshot_valid;
-
-/* Confirmation phase variables */
-extern uint32_t ulp_detection_phase;
-extern uint32_t ulp_confirmation_sum;
-extern uint32_t ulp_confirmation_count;
-extern uint32_t ulp_confirmation_avg;
-extern uint32_t ulp_detection_direction;
+extern uint32_t ulp_curr_battery_state;
+extern uint32_t ulp_last_battery_state;
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
 extern uint32_t ulp_button_press_counter;
+extern uint32_t ulp_button_last_result;
+extern uint32_t ulp_curr_button_state;
+extern uint32_t ulp_last_button_state;
 #endif
-/* ULP memory is 32-bit word addressed - all variables are uint32_t */
-/* For small values, only lower bits are used */
-extern uint32_t ulp_curr_wake_status;  /* Packed: bits 0-1=source, 2-4=adc, 5-7=button */
-extern uint32_t ulp_last_wake_status;  /* Packed: bits 0-1=source, 2-4=adc, 5-7=button */
-extern uint32_t ulp_low_threshold;
+// extern uint32_t ulp_charging_active;
 
-/**
- * @brief ULP Program Manager
- *
- * This module manages the lifecycle of ULP programs, including binary loading,
- * program initialization, starting, and resuming after wake events.
- */
+extern uint32_t ulp_plateau_last_sample;
+extern uint32_t ulp_plateau_direction;
+extern uint32_t ulp_plateau_count;
+extern uint32_t ulp_plateau_delta;
+extern uint32_t ulp_plateau_delta_sum;
+extern uint32_t ulp_plateau_delta_avg;
+extern uint32_t ulp_plateau_adaptive_threshold;
+extern uint32_t ulp_plateau_processing;
+extern uint32_t ulp_delta_abs;
+extern uint32_t ulp_plateau_samples_needed;
+;
+
+#if defined(DEBUG_ULP_VALUES)
+extern uint32_t ulp_debug_adp_delta_path;
+extern uint32_t ulp_debug_delta_min;
+#endif
+
+extern uint32_t ulp_slow_samples[ULP_ADC_HISTORY_SIZE];
+extern uint32_t ulp_slow_idx;
+extern uint32_t ulp_slow_sum;
+extern uint32_t ulp_slow_avg;
+extern uint32_t ulp_slow_count;
+
+extern uint32_t ulp_last_result;
+extern uint32_t ulp_cycle_count;
+extern uint32_t ulp_main_cpu_running;
+/* History snapshot variables for main CPU access */
+#ifdef SNAPSHORT_AS_ARRAY
+extern uint32_t ulp_snapshot[];  /* ULP snapshot array in RTC memory */
+#else
+extern uint32_t ulp_snapshot_voltage;
+extern uint32_t ulp_snapshot_timestamp;
+extern uint32_t ulp_snapshot_valid;
+#endif
+
+extern uint32_t ulp_calibrated_voltage_3V2;
+extern uint32_t ulp_calibrated_voltage_3V6;
+extern uint32_t ulp_calibrated_voltage_3V8;
+extern uint32_t ulp_calibrated_voltage_4V0;
+extern uint32_t ulp_calibrated_voltage_4V1;
+extern uint32_t ulp_calibrated_voltage_4V2;
 
 /**
  * @brief Initialize ULP program - load binary once at power-up
@@ -97,4 +102,9 @@ void start_ulp_program(void);
  */
 void resume_ulp_program(void);
 
+#endif /* CONFIG_ULP_COPROC_ENABLED */
+
+#ifdef __cplusplus
+}
+#endif
 #endif /* F478CF77_DF17_4B41_970F_52702B05EC89 */

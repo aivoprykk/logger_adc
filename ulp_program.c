@@ -1,6 +1,14 @@
-#include "ulp_program.h"
+#include "adc_private.h"
+
+#if defined(CONFIG_ULP_COPROC_ENABLED)
 #include "esp_system.h"
 #include "ulp.h"
+#include "soc/soc.h"
+
+#include "ulp_program.h"
+#include "adc_snapshot.h"
+#include "ulp_adc_config.h"
+#include "adc_ulp.h"
 
 /* ULP binary references */
 extern const uint8_t ulp_battery_bin_start[] asm("_binary_ulp_battery_bin_start");
@@ -13,69 +21,58 @@ extern uint32_t ulp_entry;
 
 static const char *TAG = "ulp_prog";
 RTC_DATA_ATTR bool ulp_prog_initialized = false;
-
+RTC_DATA_ATTR bool ulp_prog_running = false;
 enum reset_mode_e {
     RESET_MODE_ON_RESUME = 0,
     RESET_MODE_ON_START = 1,
     RESET_MODE_ON_INIT = 2
 };
 
-static void reset_ulp_snapshot(void)
-{
-    FUNC_ENTRY(TAG);
-    /* Reset confirmation phase variables - commented out to preserve confirmation state across restarts */
-    // ULP_SET_U32(ulp_detection_phase, 0);
-    // ULP_SET_U32(ulp_confirmation_sum, 0);
-    // ULP_SET_U32(ulp_confirmation_count, 0);
-    // ULP_SET_U32(ulp_confirmation_avg, 0);
-    // ULP_SET_U32(ulp_detection_direction, 0);
-
-    /* Reset snapshot variables for main CPU */
-    ULP_SET_U32(ulp_snapshot_confirmation_avg, 0);
-    ULP_SET_U32(ulp_snapshot_baseline_avg, 0);
-
-    /* Reset history snapshot variables */
-    ULP_SET_U32(ulp_snapshot_running_sum, 0);
-    ULP_SET_U32(ulp_snapshot_history_idx, 0);
-    ULP_SET_U32(ulp_snapshot_cycle_count, 0);
-    ULP_SET_U32(ulp_snapshot_valid_count, 0);
-    ULP_SET_U32(ulp_snapshot_history_avg, 0);
-    ULP_SET_U32(ulp_snapshot_last_sample, 0);
-    ULP_SET_U32(ulp_snapshot_cum_change, 0);
-    ULP_SET_U32(ulp_snapshot_mad, 0);
-    ULP_SET_U32(ulp_snapshot_state, 0);
-    ULP_SET_U32(ulp_snapshot_valid, 0);
-}
-
 static void reset_ulp_vars(enum reset_mode_e mode) {
     FUNC_ENTRY(TAG);
     if(mode >= RESET_MODE_ON_START) {
-        reset_ulp_snapshot();
-#if defined(CONFIG_ULP_BUTTON_ENABLED)
-        ulp_button_press_counter = 0;
-#endif
         if(mode == RESET_MODE_ON_START) {
-            DLOG(TAG, "Preserved last_wake_status=0x%02lX for next wake comparison", ULP_GET_U32(ulp_last_wake_status));
+            DLOG(TAG, "Preserved last_wake_status=0x%02lX for next wake comparison", ULP_GET_U32(ulp_last_battery_state));
         }
         else if (mode == RESET_MODE_ON_INIT) { // init state
+#if defined(CONFIG_ULP_BUTTON_ENABLED)
+            ulp_button_press_counter = 0;
+            ulp_curr_button_state = 0;
+            ulp_last_button_state = 0;
+#endif
             /* Full reset - also clear history and running sum */
-            ulp_cycle_count = 0;
-            ulp_history_idx = 0;
-            // ulp_low_threshold = 0;  // DON'T reset - keep computed threshold
+            ulp_curr_battery_state = 0;
+            ulp_last_battery_state = 0;
+            ulp_plateau_direction = 0;
+            ulp_plateau_count = 0;
+            ulp_plateau_last_sample = 0;
+            ulp_plateau_delta = 0;
+            ulp_plateau_delta_sum = 0;
+            ulp_plateau_delta_avg = 0;
+            ulp_plateau_processing = 0;
+            ulp_delta_abs = 0;
+#if defined(DEBUG_ULP_VALUES)
+            ulp_debug_adp_delta_path = 0;
+            ulp_debug_delta_min = 0;
+#endif
             ulp_last_result = 0;
-            ulp_running_sum = 0;
-            ulp_cum_change = 0;
-            for (uint32_t i = 0; i < ULP_ADC_HISTORY_SIZE; ++i) {
-                ULP_SET_ARR_U32(ulp_history, i, 0);
-            }
-            ulp_last_wake_status = 0;
+            ulp_cycle_count = 0;
             ulp_main_cpu_running = 0;
-            ulp_charging_active = 0;
-            ulp_adaptive_threshold = 0;  /* Will be initialized adaptively */
+#if defined(SNAPSHORT_AS_ARRAY)
+            memset(&ulp_snapshot, 0, ULP_SNAPSHOT_RAW_FIELDS_NUM * sizeof(uint32_t));
+#else
+            ulp_snapshot_voltage = 0;
+            ulp_snapshot_timestamp = 0;
+            ulp_snapshot_valid = 0;
+#endif
+
+            memset(&ulp_slow_samples, 0, ULP_ADC_HISTORY_SIZE * sizeof(uint32_t));
+            ulp_slow_idx = 0;
+            ulp_slow_sum = 0;
+            ulp_slow_avg = 0;
         }
     }
-    // Always clear current wake status
-    ulp_curr_wake_status = 0;
+    // Always clear current battery state
 }
 
 /**
@@ -92,7 +89,7 @@ esp_err_t init_ulp_program(void) {
     /* Check reset reason - on power-on reset, RTC fast memory (ULP code) is cleared
      * but RTC slow memory (ulp_prog_initialized flag) persists. We must reload binary. */
     esp_reset_reason_t reset_reason = esp_reset_reason();
-    bool force_reload = (reset_reason == ESP_RST_POWERON);
+    bool force_reload = false; // (reset_reason == ESP_RST_POWERON);
 
     if (force_reload) {
         ILOG(TAG, "Power-on reset detected - forcing ULP binary reload (ulp_prog_initialized=%d)", ulp_prog_initialized);
@@ -117,7 +114,7 @@ esp_err_t init_ulp_program(void) {
         return err;
     }
 
-    compute_and_store_ulp_thresholds(BATTERY_CRITICAL_LOW_MV);
+    compute_and_store_ulp_thresholds();
 
     reset_ulp_vars(RESET_MODE_ON_INIT);
     
@@ -127,7 +124,7 @@ esp_err_t init_ulp_program(void) {
          ulp_prog_size_bytes, ulp_prog_size_words);
     DLOG(TAG, "Raw ULP variable check (first boot - binary loaded):");
     DLOG(TAG, "  Thresholds: low=%lu, rapid_change=%d",
-           ULP_GET_U32(ulp_low_threshold), ADC_RAPID_CHANGE_THRESHOLD);
+           ULP_GET_U32(ulp_calibrated_voltage_3V2), ADC_RAPID_CHANGE_THRESHOLD);
     DLOG(TAG, "  last_result addr=%p, value=0x%08lX (%lu)",
             &ulp_last_result, ULP_GET_U32(ulp_last_result), ULP_GET_U32(ulp_last_result));
     return ESP_OK;
@@ -140,12 +137,18 @@ bool ulp_prog_is_initialized(void)
 
 bool ulp_prog_main_cpu_is_running(void)
 {
+#ifdef ULP_MODE
     return (ULP_GET_U32(ulp_main_cpu_running) != 0);
+#else
+    return false;
+#endif
 }
 
 void ulp_prog_set_main_cpu_running(bool running)
 {
+#ifdef ULP_MODE
     ULP_SET_U32(ulp_main_cpu_running, running ? 1 : 0);
+#endif
 }
 
 /**
@@ -169,12 +172,10 @@ void resume_ulp_program(void)
 
     // ILOG(TAG, "Resuming ULP program (post-ULP-wake - preserving ADC history)...");
 
-    /* Only clear current wake status - the main CPU has processed it.
-     * Preserve ALL monitoring state (cycle_count, history[], running_sum, etc.)
-     * because we're just resuming the ULP after a brief wake to handle an event.
-     * The battery voltage hasn't changed significantly during the short wake period. */
-    if(ulp_curr_wake_status != 0)
-        reset_ulp_vars(RESET_MODE_ON_RESUME);
+    ulp_prog_set_main_cpu_running(true);
+    ulp_live_snap_init();
+
+    if(ulp_prog_running) goto done;
 
     /* CRITICAL: Add delay to ensure RTC memory write is visible to ULP before restart.
      * Without this, ULP may start before curr_wake_status clear propagates, see non-zero
@@ -203,7 +204,9 @@ void resume_ulp_program(void)
     if (cycle_after == cycle_before) {
         WLOG(TAG, "WARNING: ULP cycle_count did NOT increment after ulp_run() - ULP may not be running!");
     }
-
+    ulp_prog_running = true;
+    done:
+    ulp_live_snap_get();
 #if (C_LOG_LEVEL <= LOG_INFO_NUM)
     debug_ulp_status();
 #endif
@@ -221,3 +224,4 @@ void start_ulp_program(void)
     reset_ulp_vars(RESET_MODE_ON_START);
     resume_ulp_program();
 }
+#endif // CONFIG_LOGGER_ADC_MODE_ULP

@@ -9,35 +9,12 @@ extern "C" {
 #include <stdbool.h>
 #include "adc_defs.h"  /* Assembly-safe public definitions */
 
-#define ADC_BAT_STATES_ENUM(l) ADC_BATTERY_##l,
-#define ADC_BUTTON_STATES_ENUM(l) ADC_BUTTON_##l,
-
-#define ADC_BAT_STATES(l) \
-    l(NORMAL) /* Battery level within normal range */ \
-    l(LOW) /* Battery level below low threshold */ \
-    l(HIGH) /* Battery level above high threshold (full) */ \
-    l(CHARGING_STARTED) /* Charging just started (rapid voltage increase) */ \
-    l(CHARGING_STOPPED) /* Charging stopped (voltage plateau/drop) */ \
-    l(CRITICAL_LOW) /* Battery level critically low */ \
-    l(CHARGE_STABILIZED) /* Battery voltage stabilized after charging */
-
-#define ADC_BUTTON_STATES(l) \
-    l(NONE) \
-    l(LONG_PRESS)
-
 /* Note: ADC_ULP_ADC_WAKE_REASONS, ADC_ULP_BUTTON_WAKE_REASONS, and ADC_ULP_WAKE_SOURCES
  * are now defined in adc_defs.h as the single source of truth */
 
 /* ADC battery state enumeration - used for both ULP and regular ADC modes */
 typedef enum {
     ADC_BAT_STATES(ADC_BAT_STATES_ENUM)
-    // ADC_BATTERY_NORMAL = 0,           /* Battery level within normal range */
-    // ADC_BATTERY_LOW = 1,              /* Battery level below low threshold */
-    // ADC_BATTERY_HIGH = 2,             /* Battery level above high threshold (full) */
-    // ADC_BATTERY_CHARGING_STARTED = 3, /* Charging just started (rapid voltage increase) */
-    // ADC_BATTERY_CHARGING_STOPPED = 4, /* Charging stopped (voltage plateau/drop) */
-    // ADC_BATTERY_CRITICAL_LOW = 5,     /* Battery level critically low */
-    // ADC_BATTERY_CHARGE_STABILIZED = 6 /* Battery voltage stabilized after charging */
 } adc_battery_state_t;
 
 typedef enum {
@@ -46,32 +23,27 @@ typedef enum {
 
 /* ULP wake reason enumerations - public API */
 typedef enum {
-    ADC_ULP_BAT_STATES(ADC_ULP_ADC_WAKE_REASONS_ENUM)
+    ADC_BAT_STATES(ADC_ULP_ADC_WAKE_REASONS_ENUM)
 } adc_ulp_adc_wake_reason_t;
 
 typedef enum {
-    ADC_ULP_BUTTON_WAKE_REASONS(ADC_ULP_BUTTON_WAKE_REASONS_ENUM)
+    ADC_BUTTON_STATES(ADC_ULP_BUTTON_WAKE_REASONS_ENUM)
 } adc_ulp_button_wake_reason_t;
 
 typedef enum {
-    ADC_ULP_WAKE_SOURCES(ADC_ULP_WAKE_SOURCES_ENUM)
-    // WAKE_SOURCE_NONE    = 0x0,
-    // WAKE_SOURCE_ADC     = 0x1,
-    // WAKE_SOURCE_BUTTON  = 0x2,
-    // WAKE_SOURCE_BOTH    = 0x3
+    ADC_WAKE_SOURCES(ADC_ULP_WAKE_SOURCES_ENUM)
 } adc_ulp_wake_source_t;
 
 /* String arrays for enums (for debugging) */
 const char* adc_battery_states_str(int i);
-const char* adc_ulp_wake_sources_str(int i);
-const char* adc_ulp_adc_wake_reasons_str(int i);
-const char* adc_ulp_button_wake_reasons_str(int i);
+const char* adc_wake_sources_str(int i);
+const char* adc_button_wake_reasons_str(int i);
 
 /* Main ADC functions */
 int adc_init();
 int adc_deinit();
-uint8_t calc_bat_perc_v(float adc);
-uint8_t adc_on_ac();
+uint8_t adc_calc_bat_perc(float adc);
+uint8_t adc_is_charging();
 
 float adc_get_cached_batt_volt();
 uint32_t adc_get_cached_batt_mv(void);
@@ -83,9 +55,15 @@ uint32_t adc_get_cached_batt_mv(void);
 // adc_battery_state_t get_battery_state(void);
 /* Optimized display functions */
 void get_battery_voltage_for_display(float *voltage_out); /* Optimized for display updates - uses reference */
-void adc_sync_initial_charging_state(bool charging);
-adc_battery_state_t get_adc_state(void);
-bool get_adc_charging_state(void);                   /* Get current charging state - single source of truth */
+// void adc_sync_initial_charging_state(bool charging);
+uint8_t battery_get_current_battery_state(void);
+uint8_t battery_get_last_battery_state(void);
+uint8_t battery_get_pending_battery_event(void);
+#if defined(CONFIG_ULP_BUTTON_ENABLED)
+uint8_t battery_get_current_button_state(void);
+uint8_t battery_get_last_button_state(void);
+uint8_t battery_get_pending_button_event(void);
+#endif
 bool adc_check_and_clear_lcd_charge_flag(void);     /* Check and clear LCD charge notification flag */
 
 /* Battery monitoring and safety functions - managed by ADC module */
@@ -96,14 +74,13 @@ void adc_set_low_battery_callback(void (*callback)(void)); /* Set callback for l
 /* ADC event suppression functions - prevent false events during system transitions */
 void adc_suppress_events(const char* reason);       /* Suppress ADC events with reason logging */
 void adc_resume_events(const char* reason);         /* Resume ADC events with reason logging */
-bool adc_should_suppress_event(int32_t event_id);   /* Check if specific event should be suppressed */
+bool adc_should_suppress_event(int event_id);   /* Check if specific event should be suppressed */
 
 /* Forward declarations for app mode context - defined in main module */
 typedef enum app_mode_s app_mode_t;
 
 /* App mode context functions - implemented in main module for ADC charge state logic */
-app_mode_t get_current_app_mode(void);              /* Get current app mode for charge state decisions */
-bool get_current_charging_state(void);              /* Get current charging state for consistency */
+// app_mode_t get_current_app_mode(void);              /* Get current app mode for charge state decisions */
 bool should_filter_charge_events(void);             /* Check if charge events should be filtered */
 
 #if defined(CONFIG_ULP_COPROC_ENABLED)
@@ -112,18 +89,16 @@ int init_ulp_program(void);                        /* Load ULP binary (runs once
 esp_err_t init_ulp_adc(void);                      /* Initialize ULP ADC hardware (with locking) */
 void deinit_ulp_adc(void);                         /* Deinitialize ULP ADC hardware (with locking) */
 void debug_ulp_status(void);                /* Debug function to show ULP status */
-adc_battery_state_t get_battery_state_from_ulp(void);  /* Get battery state using ULP variables on wakeup */
-uint8_t adc_get_ulp_wake_source(void);                /* Get current ULP wake source */
-uint8_t adc_get_ulp_last_wake_reason(void);
-uint8_t adc_get_ulp_wake_reason(void);                /* Get specific ADC wake reason */
-void adc_ulp_clear_wake_sources(void);                     /* Clear all ULP wake sources */
-uint8_t adc_ulp_after_wake(void);                /* Update last based on current wake source */
+
+uint8_t get_battery_state_from_ulp(void);  /* Get battery state using ULP variables on wakeup */
+
+void adc_ulp_clear_wake_sources(bool preserve_last_status);                     /* Clear all ULP wake sources */
+int adc_ulp_after_wake(void);                /* Update last based on current wake source */
 bool adc_ulp_threshold_triggered(void);                /* Check if ULP detected ADC threshold trigger */
 uint32_t adc_ulp_get_cycle_count(void);                /* Get ULP cycle count - safe RTC memory access */
 
 /* Unified ULP sensor functions - for both ADC and button */
 bool adc_ulp_button_long_press_detected(void);             /* Check if ULP detected button long press */
-void adc_ulp_uninit_pins(void);
 
 /**
  * @brief Resume ULP program after ULP wake (preserves ADC history)

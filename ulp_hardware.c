@@ -1,4 +1,8 @@
+#include "adc_private.h"
+
+#if defined(CONFIG_ULP_COPROC_ENABLED)
 #include "ulp_hardware.h"
+#include "ulp_config.h"
 
 static const char *TAG = "ulp_hw";
 RTC_DATA_ATTR bool ulp_hw_initialized = false;
@@ -141,7 +145,7 @@ esp_err_t init_ulp_adc(void) {
     }
 
     /* Try to acquire lock if ADC is initialized, otherwise just proceed */
-    bool locked = adc_lock(1000);
+    bool locked = adc_lock(500);
     if (!locked) {
         DLOG(TAG, "ADC lock not available (main ADC not initialized), proceeding without lock");
     }
@@ -187,7 +191,7 @@ void deinit_ulp_adc(void) {
     }
 
     /* Try to acquire lock if ADC is initialized, otherwise just proceed */
-    bool locked = adc_lock(1000);
+    bool locked = adc_lock(500);
     if (!locked) {
         DLOG(TAG, "ADC lock not available (main ADC not initialized), proceeding without lock");
     }
@@ -211,3 +215,4 @@ void deinit_ulp_adc(void) {
 
     if (locked) adc_unlock();
 }
+#endif // CONFIG_ULP_COPROC_ENABLED

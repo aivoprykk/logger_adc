@@ -1,11 +1,18 @@
 #ifndef A7081C0B_F40A_45EC_BD7E_1F8762A32B76
 #define A7081C0B_F40A_45EC_BD7E_1F8762A32B76
 
-#include "adc_private.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "driver/rtc_io.h"
 #include "driver/gpio.h"
+
+#include "sdkconfig.h"
+
+#if defined(CONFIG_ULP_COPROC_ENABLED)
+
 #include "ulp_adc.h"
-#include "esp_err.h"
 
 /**
  * @brief ULP Hardware Abstraction Layer
@@ -71,4 +78,9 @@ void configure_adc_pad(void);
 // exported to adc.h
 // void deinit_ulp_adc(void);
 
+#endif /* CONFIG_ULP_COPROC_ENABLED */
+
+#ifdef __cplusplus
+}
+#endif
 #endif /* A7081C0B_F40A_45EC_BD7E_1F8762A32B76 */
