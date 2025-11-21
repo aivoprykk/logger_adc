@@ -16,29 +16,23 @@ extern "C" {
 #define DEBUG_ULP_VALUES 1
 #endif
 
-// Voltage thresholds (ADC counts)
-#define VOLTAGE_3V2  1600  // 3.2V
-#define VOLTAGE_3V6  1800  // 3.6V
-#define VOLTAGE_3V8  1900  // 3.8V
-#define VOLTAGE_4V0  2000  // 4.0V
-#define VOLTAGE_4V1  2050  // 4.1V
-#define VOLTAGE_4V2  2100  // 4.2V
-
 // Rise thresholds (charging/load removal)
 // NOTE: These are tuned for ADP plateau detection
 #define RISE_THRESH_MAX          200
-#define RISE_THRESH_CRITICAL     100
-#define RISE_THRESH_DISCHARGING  60
+#define RISE_THRESH_HIGH         100
+
+#define RISE_THRESH_CRITICAL     50
+#define RISE_THRESH_DISCHARGING  50
 #define RISE_THRESH_NOMINAL      40
 #define RISE_THRESH_CHARGING     30
-#define RISE_THRESH_FULL         20
+#define RISE_THRESH_FULL         25
 
 // Fall thresholds (discharging/load applied)
-#define FALL_THRESH_CRITICAL     60
-#define FALL_THRESH_DISCHARGING  40
+#define FALL_THRESH_CRITICAL     45
+#define FALL_THRESH_DISCHARGING  45
 #define FALL_THRESH_NOMINAL      30
-#define FALL_THRESH_CHARGING     20
-#define FALL_THRESH_FULL         10
+#define FALL_THRESH_CHARGING     25
+#define FALL_THRESH_FULL         18
 
 // ADP parameters
 #define PLATEAU_SAMPLES_CRITICAL  2

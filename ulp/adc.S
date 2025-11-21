@@ -375,7 +375,7 @@ adp_detection:
 
     move r0, PLATEAU_SAMPLES_CRITICAL
     st r0, r3, 0
-    move r0, RISE_THRESH_CRITICAL
+    move r0, RISE_THRESH_HIGH
     jump goto_fast_charging_check
 
 is_curr_battery_state_normal:

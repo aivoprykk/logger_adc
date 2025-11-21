@@ -12,9 +12,13 @@
 #include "esp_adc/adc_oneshot.h"
 #include "ulp_adc.h"
 
-#include "ulp_myadc.h"
 #include "ulp/my_ulp_config.h"
 
+extern uint32_t ulp_entry;
+extern uint32_t ulp_last_result;
+extern uint32_t ulp_sample_counter;
+extern uint32_t ulp_low_thr;
+extern uint32_t ulp_high_thr;
 extern const uint8_t ulp_myadc_bin_start[] asm("_binary_ulp_myadc_bin_start");
 extern const uint8_t ulp_myadc_bin_end[]   asm("_binary_ulp_myadc_bin_end");
 
