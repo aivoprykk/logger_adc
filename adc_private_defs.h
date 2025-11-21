@@ -11,8 +11,10 @@ extern "C" {
 #if !defined(ULP_MODE) && defined(CONFIG_ULP_COPROC_ENABLED)
 #define ULP_MODE
 #endif
-
+// Define DEBUG_ULP_VALUES if ADC log level is set to INFO or more
+#if (CONFIG_LOGGER_ADC_LOG_LEVEL <= 2)
 #define DEBUG_ULP_VALUES 1
+#endif
 
 // Voltage thresholds (ADC counts)
 #define VOLTAGE_3V2  1600  // 3.2V

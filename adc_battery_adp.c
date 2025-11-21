@@ -177,7 +177,7 @@ inline uint8_t running_avg_idx(const adc_running_avg_t * avg) {
 }
 
 void running_avg_print(const adc_running_avg_t * avg, const char* name) {
-#if C_LOG_LEVEL <= LOG_INFO_NUM
+#if (C_LOG_LEVEL <= LOG_INFO_NUM)
     if(!avg) return;
     char buf[128] = {0};
     char *p = buf;

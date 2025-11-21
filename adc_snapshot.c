@@ -179,7 +179,7 @@ void debug_ulp_status(void) {
 #ifdef ULP_MODE
     if(!ulp_prog_is_initialized()) return;
     snapshot_dump(&current_snapshot, "ULP Snap");
-#if C_LOG_LEVEL <= LOG_DEBUG_NUM
+#if (C_LOG_LEVEL <= LOG_DEBUG_NUM)
     ulp_dump_calibration();
 #endif
 #endif
@@ -229,7 +229,7 @@ void monitor_dump(const battery_monitor_t *monitor, const char* tag) {
         "    Slow Window");
     if(monitor->plateau)  plateau_print(monitor->plateau, 
         "        Plateau");
-#if !defined(ULP_MODE) && C_LOG_LEVEL <= LOG_DEBUG_NUM
+#if !defined(ULP_MODE) && (C_LOG_LEVEL <= LOG_DEBUG_NUM)
     battery_dump_calibration(&current_calibration, "C Monitor");
 #endif
 }

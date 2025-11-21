@@ -175,7 +175,7 @@ void ulp_take_last_snapshot(battery_snapshot_t *snap, uint32_t timeout_ms) {
             ULP_GET_U32(ulp_plateau_samples_needed),
             (int16_t)ULP_GET_U32(ulp_debug_adp_delta_path)
          );
-#if C_LOG_LEVEL <= LOG_DEBUG_NUM
+#if (C_LOG_LEVEL <= LOG_DEBUG_NUM)
     ulp_dump_calibration();
 #endif
 #endif

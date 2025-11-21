@@ -59,15 +59,12 @@ const char * adc_button_wake_reasons_str(int i) { return i >= arr_size(_adc_butt
 const char * adc_battery_states_str(int i) {
 #if (C_LOG_LEVEL <= LOG_ERR_NUM)
     if(i==ADC_BATTERY_CRITICAL_LOW)  return "CRITICAL_LOW";
-#if (C_LOG_LEVEL <= LOG_ERR_NUM)
-    else if(i==ADC_BATTERY_LOW)  return "LOW";
 #endif
-#endif
-    else return nums[i];
+    else return nums(i);
 }
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
-const char * adc_wake_sources_str(int i) { return nums[i]; }
-const char * adc_button_wake_reasons_str(int i) { return nums[i]; }
+const char * adc_wake_sources_str(int i) { return nums(i); }
+const char * adc_button_wake_reasons_str(int i) { return nums(i); }
 #endif
 #endif
 // const char * adc_event_strings(int id) { return adc_battery_states_str(id); }

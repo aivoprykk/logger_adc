@@ -33,7 +33,7 @@ menu "Logger ADC Module Options"
 
     config ULP_BUTTON_ENABLED
         bool "Enable ULP button monitoring"
-        default y
+        default n
         help
             Enable ULP coprocessor button long press monitoring.
             IMPORTANT: When enabled, ensure ULP_BUTTON_GPIO matches

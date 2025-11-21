@@ -145,8 +145,6 @@ button_last_result: .long 0
 curr_button_state: .long 0
 .global last_button_state
 last_button_state: .long 0
-.global button_event_pending
-button_event_pending: .long 0
 #endif
 
 .text
@@ -173,28 +171,11 @@ first_run_init:
 sleep_cycle:
     stage_rst
     stage_inc WAIT_ITERATIONS
-    /* Check battery state for conditional wait time */
-    move r1, curr_battery_state
-    ld r1, r1, 0
-    move r0, BAT_STATE_CRITICAL_LOW
-    sub r0, r1, r0
-    jump normal_wait, ov  /* If not critical, normal wait */
-
-    /* Critical low: wait 8 * WAIT_ITERATIONS iterations */
-    move r2, WAIT_ITERATIONS
-    lsh r2, r2, 3  /* Multiply by 8 */
-    jump do_wait
-
-normal_wait:
-    /* Normal: wait WAIT_ITERATIONS iterations */
-    move r2, WAIT_ITERATIONS
-
-do_wait:
 wait_loop:
     wait WAIT_TICKS_PER_ITER
-    sub r2, r2, 1
-    jump wait_loop, ov  /* Loop if no overflow (r2 > 0) */
-jump wake_check
+    stage_dec 1
+    jumps wait_loop, 1, ge
+    jump wake_check
 
 wake_check:
     jump process_adc
