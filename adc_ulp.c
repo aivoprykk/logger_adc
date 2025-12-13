@@ -106,6 +106,9 @@ int adc_ulp_after_wake(void) {
     FUNC_ENTRY(TAG);
     ULP_SET_U32(ulp_last_battery_state, 0);
     ulp_live_snap_init();
+#if (C_LOG_LEVEL > LOG_DEBUG_NUM)
+    snapshot_dump(&ulp_live_snapshot, " === ULP Wakeup");
+#endif
     return WAKE_SOURCE_BATTERY;
 }
 

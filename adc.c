@@ -1401,7 +1401,7 @@ esp_err_t adc_init(void) {
     adc_continuous_evt_cbs_t cbs = {
         .on_conv_done = s_conv_done_cb,
     };
-    xTaskCreatePinnedToCore(adc_task, "ADC Task", (8*256), NULL, 0, &adc_ctx.adc_task_handle, 0);
+    xTaskCreatePinnedToCore(adc_task, "ADC Task", (8*256), NULL, 0, &adc_ctx.adc_task_handle, 1);
     if(adc_continuous_register_event_callbacks(adc_ctx.adc1_handle, &cbs, NULL)) {
         ELOG(TAG, "[%s] Failed to register event callbacks", __func__);
         return ESP_FAIL;
