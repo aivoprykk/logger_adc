@@ -185,6 +185,16 @@ void debug_ulp_status(void) {
 #endif
 }
 
+void debug_ulp_get_status(void) {
+#ifdef ULP_MODE
+    if(!ulp_prog_is_initialized()) return;
+    snapshot_dump(ulp_live_snap_get(), "ULP Snap");
+#if (C_LOG_LEVEL <= LOG_DEBUG_NUM)
+    ulp_dump_calibration();
+#endif
+#endif
+}
+
 void debug_c_status(void) {
 #if defined(USE_REF_SNAPSHOT) || !defined(ULP_MODE)
     // snapshot_dump(c_live_snap_get(), "C Live");

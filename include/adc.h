@@ -81,7 +81,7 @@ typedef enum app_mode_s app_mode_t;
 
 /* App mode context functions - implemented in main module for ADC charge state logic */
 // app_mode_t get_current_app_mode(void);              /* Get current app mode for charge state decisions */
-bool should_filter_charge_events(void);             /* Check if charge events should be filtered */
+// bool should_filter_charge_events(void);             /* Check if charge events should be filtered */
 
 #if defined(CONFIG_ULP_COPROC_ENABLED)
 
@@ -89,6 +89,7 @@ int init_ulp_program(void);                        /* Load ULP binary (runs once
 esp_err_t init_ulp_adc(void);                      /* Initialize ULP ADC hardware (with locking) */
 void deinit_ulp_adc(void);                         /* Deinitialize ULP ADC hardware (with locking) */
 void debug_ulp_status(void);                /* Debug function to show ULP status */
+void debug_ulp_get_status(void);         /* Debug function to get ULP snapshot and calibration */
 
 uint8_t get_battery_state_from_ulp(void);  /* Get battery state using ULP variables on wakeup */
 
@@ -112,6 +113,8 @@ void resume_ulp_program(void);
 void ulp_prog_set_main_cpu_running(bool running);
 bool ulp_prog_main_cpu_is_running(void);
 bool ulp_prog_is_initialized(void);
+
+struct battery_snapshot_s* battery_update_snapshot(uint16_t adc_reading);
 
 #endif /* CONFIG_ULP_COPROC_ENABLED */
 

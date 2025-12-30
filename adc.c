@@ -30,9 +30,6 @@ const char * nums[] = { "0", "1", "2", "3", "4", "5", "6", "7", "8", "9" };
 const char * adc_battery_states_str(int i) {
 #if (C_LOG_LEVEL <= LOG_ERR_NUM)
     if(i==ADC_BATTERY_CRITICAL_LOW)  return "CRITICAL_LOW";
-#if (C_LOG_LEVEL <= LOG_ERR_NUM)
-    else if(i==ADC_BATTERY_LOW)  return "LOW";
-#endif
 #endif
     else return nums[i];
 }
@@ -106,7 +103,7 @@ static int64_t s_adc_suppression_start_time = 0;
 
 static const char * _adc_event_strings[] = { ADC_EVENT_LIST(STRINGIFY) };
 const char * adc_event_strings(int id) {
-    return _adc_event_strings[id];
+    return id < lengthof(_adc_event_strings) ? _adc_event_strings[id] : "ADC_EVENT_UNKNOWN";
 }
 
 static const char *TAG = "adc";
@@ -396,8 +393,7 @@ static void post_battery_state_event(adc_battery_state_t state, const char* sour
     uint32_t voltage_mv = adc_get_cached_batt_mv();
 
     // Check if we should filter events based on app mode
-    bool should_filter = should_filter_charge_events();
-    if (should_filter) {
+    if (should_filter_charge_events()) {
         // During boot/shutdown - only allow critical events to pass through
         if (state != ADC_BATTERY_CRITICAL_LOW) {
             WLOG(TAG, "%s charge event filtered during app mode transition: state=%d", source, state);

@@ -48,7 +48,6 @@ void snapshot_dump(const battery_snapshot_t *snapshot, const char* tag);
 // Unified API
 void battery_snapshot_init(void);
 battery_snapshot_t* battery_get_snapshot(void);
-battery_snapshot_t* battery_update_snapshot(uint16_t adc_reading);
 
 uint8_t should_wake_for_battery_state(uint8_t new_battery_state, uint8_t last_packed_status, uint8_t main_cpu_running);
 uint8_t battery_set_battery_state(battery_monitor_t* monitor, adc_battery_state_t new_state, bool update_last);

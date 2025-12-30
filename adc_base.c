@@ -6,6 +6,7 @@
 
 #include "adc_snapshot.h"
 #include "ulp_config.h"
+#include "main.h"  // For should_filter_charge_events
 
 static const char *TAG = "adc_base";
 
@@ -197,8 +198,7 @@ static inline uint32_t adc_raw_to_mv(uint32_t raw_adc_value) {
 static void handle_battery_state(adc_battery_state_t state) {
     FUNC_ENTRY_ARGS(TAG, "state: %d", state);
     // Check if we should filter events based on app mode
-    bool should_filter = should_filter_charge_events();
-    if (should_filter) {
+    if (should_filter_charge_events()) {
         // During boot/shutdown - only allow critical events to pass through
         if (state != ADC_BATTERY_CRITICAL_LOW) {
             WLOG(TAG, "charge event filtered during app mode transition: state=%d", state);
@@ -332,6 +332,9 @@ float adc_get_cached_batt_volt(void) {
 /* Battery monitoring API - thread-safe access to battery data */
 bool adc_check_battery_level(void) {
     if (!adc_initialized) return true; // Default to safe if not initialized
+    FUNC_ENTRY_ARGS(TAG, " voltage_raw: %hu, threshold_3V2: %hu",
+                    battery_get_snapshot()->battery_monitor.voltage_raw,
+                    current_calibration.voltage_3V2);
     return (battery_get_snapshot()->battery_monitor.voltage_raw >= current_calibration.voltage_3V2);
 }
 

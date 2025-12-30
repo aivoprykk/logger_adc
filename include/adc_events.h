@@ -8,9 +8,13 @@ extern "C" {
 #include "esp_event.h"
 #include "logger_common.h"
 #include "adc_defs.h"
+
+#define ADC_EVENT_BASE 0x10  // Component ID 1
+
 // Declare an event base
 ESP_EVENT_DECLARE_BASE(ADC_EVENT);        // declaration of the ADC_EVENT family
 #define ADC_EVENT_ENUM(l) ADC_EVENT_##l,
+#define ADC_EVENT_LIST(l) ADC_BAT_STATES(l) l(UPDATE)
 enum {
     ADC_BAT_STATES(ADC_EVENT_ENUM) ADC_EVENT_UPDATE
 };

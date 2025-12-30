@@ -11,7 +11,7 @@ idf_component_register(
     SRCS ${srcs} ${ulpsrcs}
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
-    REQUIRES esp_event logger_common
+    REQUIRES esp_event logger_common main
     PRIV_REQUIRES driver esp_adc
 )
 
