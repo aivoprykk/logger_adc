@@ -49,7 +49,8 @@ const char * const _nums[] = { "0", "1", "2", "3", "4", "5", "6", "7", "8", "9" 
 inline const char * nums(int i) { return i < arr_size(_nums) ? _nums[i] : "?"; };
 #if (C_LOG_LEVEL <= LOG_INFO_NUM)
 static const char * const _adc_battery_states_str[] = { ADC_BAT_STATES(STRINGIFY) };
-const char * adc_battery_states_str(int i) { return i >= arr_size(_adc_battery_states_str) ? nums(i) : _adc_battery_states_str[i]; };
+const char * adc_battery_states_str(int i) { return i >= arr_size(_adc_battery_states_str) ? "UNKNOWN_STATE" : _adc_battery_states_str[i]; };
+const char * adc_event_strings(int id) { return id >= arr_size(_adc_battery_states_str) ? "UNKNOWN_EVENT" : _adc_battery_states_str[id]; }
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
 static const char * const _adc_wake_sources_str[] = { ADC_WAKE_SOURCES(STRINGIFY) };
 const char * adc_wake_sources_str(int i) { return i >= arr_size(_adc_wake_sources_str) ? nums(i) : _adc_wake_sources_str[i]; };
@@ -63,12 +64,12 @@ const char * adc_battery_states_str(int i) {
 #endif
     else return nums(i);
 }
+const char * adc_event_strings(int id) { return "ADC_EVENT"; }
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
 const char * adc_wake_sources_str(int i) { return nums(i); }
 const char * adc_button_wake_reasons_str(int i) { return nums(i); }
 #endif
 #endif
-// const char * adc_event_strings(int id) { return adc_battery_states_str(id); }
 
 #define TIMEOUT_MAX portMAX_DELAY
 static const TickType_t timeout_immediate = 0;

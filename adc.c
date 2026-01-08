@@ -1,6 +1,6 @@
 #include "adc_private.h"
 
-#if defined(CONFIG_LOGGER_ADC_ENABLED)
+#if defined(CONFIG_LOGGER_ADC_ENABLED_OLD)
 
 #include <math.h>
 #include <stdlib.h>
@@ -1624,4 +1624,4 @@ bool adc_check_and_clear_lcd_charge_flag(void) {
     return was_set;
 }
 
-#endif // CONFIG_LOGGER_ADC_ENABLED
+#endif // CONFIG_LOGGER_ADC_ENABLED_OLD

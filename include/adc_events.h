@@ -19,7 +19,7 @@ enum {
     ADC_BAT_STATES(ADC_EVENT_ENUM) ADC_EVENT_UPDATE
 };
 
-#define adc_event_strings adc_battery_states_str
+const char * adc_event_strings(int id);
 
 #ifdef __cplusplus
 }
