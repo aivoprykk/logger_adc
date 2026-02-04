@@ -12,7 +12,7 @@ extern "C" {
 #define ULP_MODE
 #endif
 // Define DEBUG_ULP_VALUES if ADC log level is set to INFO or more
-#if (CONFIG_LOGGER_ADC_LOG_LEVEL <= 2)
+#if (CONFIG_LOGGER_ADC_LOG_LEVEL <= LOG_DEBUG_NUM)
 #define DEBUG_ULP_VALUES 1
 #endif
 

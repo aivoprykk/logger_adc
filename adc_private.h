@@ -73,6 +73,7 @@ typedef struct adc_context_s {
     adc_cali_handle_t cali_handle;
     esp_timer_handle_t low_bat_timer;
     esp_timer_handle_t adc_timer;
+    TaskHandle_t worker_task;
     uint32_t suppression_start_time_ms;
     uint32_t low_bat_start_time_ms;
     void (*low_battery_callback)(void);

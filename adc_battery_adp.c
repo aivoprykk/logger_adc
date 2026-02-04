@@ -2,7 +2,7 @@
 #if defined(CONFIG_LOGGER_ADC_ENABLED)
 #include "adc_snapshot.h"
 #ifdef ULP_MODE
-#include "adc_ulp.h"
+// #include "adc_ulp.h"
 #endif
 
 #define ADC_MIN_VALID 500
@@ -103,7 +103,7 @@ battery_snapshot_t * c_live_snap_update(uint16_t adc_reading) {
     // live_snapshot.battery_monitor.plateau->last_sample = snap->battery_monitor.slow_window->avg;
     // live_snapshot.battery_monitor.plateau->adaptive_threshold = get_directional_threshold(snap->battery_monitor.slow_window->avg, 0);
 #endif
-    FUNC_ENTRY_ARGSD(TAG, "adc_reading=%hu", adc_reading);
+    FUNC_ENTRY_ARGSD(TAG, "adc_reading=%" PRIu16 "", adc_reading);
     // Update C monitor (handles state changes, batulp_battery_event_pending, and set_battery_status internally)
     // Update the authoritative C monitor (performs detection and updates its internal state)
     uint8_t prev_state  = live_snapshot.battery_monitor.battery_state->curr;
@@ -183,11 +183,11 @@ void running_avg_print(const adc_running_avg_t * avg, const char* name) {
     char *p = buf;
     if (avg->samples != NULL) {
         for (int i = 0, j = avg->count < avg->size ? avg->count : avg->size, k = running_avg_idx(avg); i < j; i++) {
-            p += sprintf(p, "%hu%s", avg->samples[i], (i == k) ? "<" : "");
+            p += sprintf(p, "%" PRIu16 "%s", avg->samples[i], (i == k) ? "<" : "");
             if (i < j - 1) p += sprintf(p, ",");
         }
     }
-    ILOG(TAG, "%s: [%s] sum=%lu avg=%hu count=%hhu size=%hhu shift=%hhu idx=%hhu", 
+    ILOG(TAG, "%s: [%s] sum=%" PRIu32 " avg=%" PRIu16 " count=%" PRIu16 " size=%" PRIu16 " shift=%" PRIu16 " idx=%" PRIu16 "", 
         name, buf, avg->sum, avg->avg, avg->count, avg->size, avg->shift, avg->idx);
 #endif
 }
@@ -210,7 +210,7 @@ uint32_t running_avg_mad(const adc_running_avg_t * avg) {
 
 void adc_current_state_print(const adc_current_state_t* state, const char* name) {
     if(!state) return;
-    ILOG(TAG, "%s: curr=%hhu last=%hhu event_pending=%hhu", name,
+    ILOG(TAG, "%s: curr=%" PRIu8 " last=%" PRIu8 " event_pending=%" PRIu8 "", name,
          state->curr,
          state->last,
          state->event_pending
@@ -220,8 +220,8 @@ void adc_current_state_print(const adc_current_state_t* state, const char* name)
 void plateau_print(const adc_plateau_t* plateau, const char* name) {
     if(!plateau) return;
     ILOG(TAG, 
-    "%s: count=%hu last_sample=%hu (|direction=%hd| > adaptive_threshold=%hu) "
-    "delta=%hd delta_sum=%hd delta_avg=%hd reported=%hhu processing=%hu"
+    "%s: count=%" PRIu16 " last_sample=%" PRIu16 " (|direction=%hd| > adaptive_threshold=%" PRIu16 ") "
+    "delta=%hd delta_sum=%hd delta_avg=%hd reported=%" PRIu8 " processing=%" PRIu16 ""
          , name,
          plateau->count,
          plateau->last_sample,
@@ -241,42 +241,42 @@ uint16_t get_directional_threshold(uint16_t voltage, int16_t direction) {
     if (direction >= 0) {
         // Rising voltage thresholds
         if (voltage < current_calibration.voltage_3V6) {
-            DLOG(TAG, " =* Rising threshold: critical (%hu < %hu), returning %hu", voltage, current_calibration.voltage_3V6, RISE_THRESH_CRITICAL);
+            DLOG(TAG, " =* Rising threshold: critical (%" PRIu16 " < %" PRIu16 "), returning %" PRIu16 "", voltage, current_calibration.voltage_3V6, RISE_THRESH_CRITICAL);
             return RISE_THRESH_CRITICAL;
         }
         if (voltage < current_calibration.voltage_3V8) {
-            DLOG(TAG, " =* Rising threshold: discharging (%hu < %hu), returning %hu", voltage, current_calibration.voltage_3V8, RISE_THRESH_DISCHARGING);
+            DLOG(TAG, " =* Rising threshold: discharging (%" PRIu16 " < %" PRIu16 "), returning %" PRIu16 "", voltage, current_calibration.voltage_3V8, RISE_THRESH_DISCHARGING);
             return RISE_THRESH_DISCHARGING;
         }
         if (voltage < current_calibration.voltage_4V0) {
-            DLOG(TAG, " =* Rising threshold: nominal (%hu < %hu), returning %hu", voltage, current_calibration.voltage_4V0, RISE_THRESH_NOMINAL);
+            DLOG(TAG, " =* Rising threshold: nominal (%" PRIu16 " < %" PRIu16 "), returning %" PRIu16 "", voltage, current_calibration.voltage_4V0, RISE_THRESH_NOMINAL);
             return RISE_THRESH_NOMINAL;
         }
         if (voltage < current_calibration.voltage_4V1) {
-            DLOG(TAG, " =* Rising threshold: charging (%hu < %hu), returning %hu", voltage, current_calibration.voltage_4V1, RISE_THRESH_CHARGING);
+            DLOG(TAG, " =* Rising threshold: charging (%" PRIu16 " < %" PRIu16 "), returning %" PRIu16 "", voltage, current_calibration.voltage_4V1, RISE_THRESH_CHARGING);
             return RISE_THRESH_CHARGING;
         }
-        DLOG(TAG, " =* Rising threshold: full (%hu >= %hu), returning %hu", voltage, current_calibration.voltage_4V1, RISE_THRESH_FULL);
+        DLOG(TAG, " =* Rising threshold: full (%" PRIu16 " >= %" PRIu16 "), returning %" PRIu16 "", voltage, current_calibration.voltage_4V1, RISE_THRESH_FULL);
         return RISE_THRESH_FULL;
     } else {
         // Falling voltage thresholds
         if (voltage < current_calibration.voltage_3V6) {
-            DLOG(TAG, " =* Falling threshold: critical (%hu < %hu), returning %hu", voltage, current_calibration.voltage_3V6, FALL_THRESH_CRITICAL);
+            DLOG(TAG, " =* Falling threshold: critical (%" PRIu16 " < %" PRIu16 "), returning %" PRIu16 "", voltage, current_calibration.voltage_3V6, FALL_THRESH_CRITICAL);
             return FALL_THRESH_CRITICAL;
         }
         if (voltage < current_calibration.voltage_3V8) {
-            DLOG(TAG, " =* Falling threshold: discharging (%hu < %hu), returning %hu", voltage, current_calibration.voltage_3V8, FALL_THRESH_DISCHARGING);
+            DLOG(TAG, " =* Falling threshold: discharging (%" PRIu16 " < %" PRIu16 "), returning %" PRIu16 "", voltage, current_calibration.voltage_3V8, FALL_THRESH_DISCHARGING);
             return FALL_THRESH_DISCHARGING;
         }
         if (voltage < current_calibration.voltage_4V0) {
-            DLOG(TAG, " =* Falling threshold: nominal (%hu < %hu), returning %hu", voltage, current_calibration.voltage_4V0, FALL_THRESH_NOMINAL);
+            DLOG(TAG, " =* Falling threshold: nominal (%" PRIu16 " < %" PRIu16 "), returning %" PRIu16 "", voltage, current_calibration.voltage_4V0, FALL_THRESH_NOMINAL);
             return FALL_THRESH_NOMINAL;
         }
         if (voltage < current_calibration.voltage_4V1) {
-            DLOG(TAG, " =* Falling threshold: charging (%hu < %hu), returning %hu", voltage, current_calibration.voltage_4V1, FALL_THRESH_CHARGING);
+            DLOG(TAG, " =* Falling threshold: charging (%" PRIu16 " < %" PRIu16 "), returning %" PRIu16 "", voltage, current_calibration.voltage_4V1, FALL_THRESH_CHARGING);
             return FALL_THRESH_CHARGING;
         }
-        DLOG(TAG, " =* Falling threshold: full (%hu >= %hu), returning %hu", voltage, current_calibration.voltage_4V1, FALL_THRESH_FULL);
+        DLOG(TAG, " =* Falling threshold: full (%" PRIu16 " >= %" PRIu16 "), returning %" PRIu16 "", voltage, current_calibration.voltage_4V1, FALL_THRESH_FULL);
         return FALL_THRESH_FULL;
     }
 }
@@ -308,7 +308,7 @@ inline static uint8_t should_continue_detection(adc_battery_state_t curr_battery
 
 static uint8_t adp_plateau_detection(adc_plateau_t* plateau, uint16_t avg, uint16_t new_sample, int16_t difference, int curr_battery_state) {
     if(!plateau) return 0;
-    FUNC_ENTRY_ARGS(TAG, "avg=%hu new_sample=%hu curr_battery_state=%d", avg, new_sample, curr_battery_state);
+    FUNC_ENTRY_ARGS(TAG, "avg=%" PRIu16 " new_sample=%" PRIu16 " curr_battery_state=%d", avg, new_sample, curr_battery_state);
     plateau_print(plateau, "Plateau Start State");
     uint8_t ret = 0;
     plateau->direction = difference;
@@ -334,7 +334,7 @@ static uint8_t adp_plateau_detection(adc_plateau_t* plateau, uint16_t avg, uint1
     if (curr_battery_state == ADC_BATTERY_CHARGING) {
         // Increase delta_min during charging to avoid false plateau resets from normal fluctuations
         delta_min = (delta_min > 25) ? delta_min : 25;  // At least 25 ADC units tolerance during charging
-        DLOG(TAG, "ADP: Increased delta_min to %hu during charging", delta_min);
+        DLOG(TAG, "ADP: Increased delta_min to %" PRIu16 " during charging", delta_min);
     }
 
     if (delta_abs < delta_min) {
@@ -343,7 +343,7 @@ static uint8_t adp_plateau_detection(adc_plateau_t* plateau, uint16_t avg, uint1
             plateau->count++;
         }
         plateau->delta_sum += plateau->delta;
-        DLOG(TAG, "ADP: Potential plateau detected, wait: (delta=%d < delta_min=%hu) plateau_samples_needed=%hu", 
+        DLOG(TAG, "ADP: Potential plateau detected, wait: (delta=%d < delta_min=%" PRIu16 ") plateau_samples_needed=%" PRIu16 "", 
             plateau->delta, delta_min, plateau_samples_needed);
         if (plateau->count >= plateau_samples_needed && plateau->processing) {
             // Plateau confirmed - set adaptive threshold based on stability
@@ -360,7 +360,7 @@ static uint8_t adp_plateau_detection(adc_plateau_t* plateau, uint16_t avg, uint1
             plateau->processing = 0;  // End processing on reset
             plateau->reported = 1; // Mark as reported
             ret = 1; // Plateau confirmed - signal event
-            DLOG(TAG, "!!! ADP: Plateau confirmed, processing done:  delta_sum=%d delta_avg=%d plateau_samples_needed=%hu adaptive_threshold=%hu", 
+            DLOG(TAG, "!!! ADP: Plateau confirmed, processing done:  delta_sum=%d delta_avg=%d plateau_samples_needed=%" PRIu16 " adaptive_threshold=%" PRIu16 "", 
                 plateau->delta_sum, plateau->delta_avg, plateau_samples_needed, plateau->adaptive_threshold);
             goto reset;
         }
@@ -370,7 +370,7 @@ static uint8_t adp_plateau_detection(adc_plateau_t* plateau, uint16_t avg, uint1
         }
         plateau->reported = 0;  // Clear reported flag for next plateau
         // Not in plateau - reset
-        DLOG(TAG, "ADP: Peak detected, processing started (delta=%hu >= delta_min=%hu)", delta_abs, delta_min);
+        DLOG(TAG, "ADP: Peak detected, processing started (delta=%" PRIu16 " >= delta_min=%" PRIu16 ")", delta_abs, delta_min);
         // Hysteresis: Set higher threshold after change to prevent immediate re-detection
         // plateau->adaptive_threshold = 200;  // High threshold to avoid repeat detections
         reset:
@@ -388,22 +388,22 @@ static adc_battery_state_t check_fast_voltage_changes(adc_plateau_t* plateau, ui
     
     if (avg > current_calibration.voltage_4V2) {
         if (curr_battery_state != ADC_BATTERY_CHARGING) {
-            DLOG(TAG, "ADP: charging detected (avg=%hu)", avg);
+            DLOG(TAG, "ADP: charging detected (avg=%" PRIu16 ")", avg);
             result_state = ADC_BATTERY_CHARGING;
         }
     } else if (avg <= current_calibration.voltage_3V2) {
         if (curr_battery_state != ADC_BATTERY_CRITICAL_LOW) {
-            DLOG(TAG, "ADP: Critical low battery detected (avg=%hu)", avg);
+            DLOG(TAG, "ADP: Critical low battery detected (avg=%" PRIu16 ")", avg);
             result_state = ADC_BATTERY_CRITICAL_LOW;
         }
     } else {
         uint16_t charge_threshold = (avg < current_calibration.voltage_3V6) ? 100 : 200;
         if (difference > charge_threshold && curr_battery_state != ADC_BATTERY_CHARGING) {
-            DLOG(TAG, "ADP: Charging recovery detected (diff=%hd > threshold=%hu) from low voltage", difference, charge_threshold);
+            DLOG(TAG, "ADP: Charging recovery detected (diff=%hd > threshold=%" PRIu16 ") from low voltage", difference, charge_threshold);
             result_state = ADC_BATTERY_CHARGING;
         }
         if (curr_battery_state == ADC_BATTERY_CRITICAL_LOW) {
-            DLOG(TAG, "ADP: Battery recovered from critical low to NORMAL (avg=%hu)", avg);
+            DLOG(TAG, "ADP: Battery recovered from critical low to NORMAL (avg=%" PRIu16 ")", avg);
             result_state = ADC_BATTERY_NORMAL;
         }
     }
@@ -416,11 +416,11 @@ static adc_battery_state_t check_fast_voltage_changes(adc_plateau_t* plateau, ui
 
 static adc_battery_state_t interpret_plateau_event(adc_plateau_t* plateau, uint16_t avg, uint16_t new_sample, int16_t difference, adc_battery_state_t curr_battery_state) {
     // Calculate delta from plateau last sample (compares to adaptive_threshold calibrated for deltas)
-    DLOG(TAG, "ADP: Plateau stable, evaluating diff check (delta=%hd) difference=%hd > adaptive_threshold=%hu", plateau->delta, difference, plateau->adaptive_threshold);
+    DLOG(TAG, "ADP: Plateau stable, evaluating diff check (delta=%hd) difference=%hd > adaptive_threshold=%" PRIu16 "", plateau->delta, difference, plateau->adaptive_threshold);
     uint16_t difference_abs = difference >= 0 ? difference : -difference;
     // Check if delta exceeds adaptive threshold (threshold calibrated for deltas, not avg differences)
     if (difference_abs > plateau->adaptive_threshold) {
-        DLOG(TAG, "ADP: Significant delta detected (difference_abs=%hd > threshold=%hu)", difference_abs, plateau->adaptive_threshold);
+        DLOG(TAG, "ADP: Significant delta detected (difference_abs=%hd > threshold=%" PRIu16 ")", difference_abs, plateau->adaptive_threshold);
         if(avg > current_calibration.voltage_3V8 || difference_abs > 50)
             curr_battery_state = (difference > 0) ? ADC_BATTERY_CHARGING : ADC_BATTERY_NORMAL;
     }
@@ -428,10 +428,10 @@ static adc_battery_state_t interpret_plateau_event(adc_plateau_t* plateau, uint1
 }
 
 static void update_charging_state(battery_monitor_t* monitor, adc_battery_state_t new_state) {
-    FUNC_ENTRY_ARGSD(TAG, "new_state=%hhu", new_state);
+    FUNC_ENTRY_ARGSD(TAG, "new_state=%" PRIu8 "", new_state);
     uint8_t updated = battery_set_battery_state(monitor, new_state, false);
     if (!updated) {
-        DLOG(TAG, "ADP: No state change (already in state %hhu)", new_state);
+        DLOG(TAG, "ADP: No state change (already in state %" PRIu8 ")", new_state);
         return; // No change
     }
     switch (new_state) {
@@ -454,7 +454,7 @@ static void update_charging_state(battery_monitor_t* monitor, adc_battery_state_
 
 uint8_t battery_monitor_update(battery_monitor_t* monitor, uint16_t adc_reading) {
     if(!monitor || !monitor->slow_window || !monitor->battery_state || !monitor->plateau) return ADC_BATTERY_NORMAL;
-    FUNC_ENTRY_ARGSD(TAG, "adc_reading=%hu", adc_reading);
+    FUNC_ENTRY_ARGSD(TAG, "adc_reading=%" PRIu16 "", adc_reading);
 #ifndef ULP_MODE
     update_slow_window(monitor, adc_reading);
 #endif
@@ -478,7 +478,7 @@ uint8_t battery_monitor_update(battery_monitor_t* monitor, uint16_t adc_reading)
         adc_battery_state_t new_state = interpret_plateau_event(monitor->plateau, monitor->slow_window->avg, adc_reading, difference, curr_battery_state);
         if (new_state != curr_battery_state) {
             update_charging_state(monitor, new_state);
-            DLOG(TAG, "ADP: state change detected: last_state=%d new_state=%hhu -> monitor: curr_battery_state=%hhu",
+            DLOG(TAG, "ADP: state change detected: last_state=%d new_state=%" PRIu8 " -> monitor: curr_battery_state=%" PRIu8 "",
             curr_battery_state, new_state, monitor->battery_state->curr);
             // Handle CHARGING_STARTED -> NORMAL transition as CHARGING_STOPPED event
             if (new_state == ADC_BATTERY_NORMAL && curr_battery_state == ADC_BATTERY_CHARGING) {
@@ -488,7 +488,7 @@ uint8_t battery_monitor_update(battery_monitor_t* monitor, uint16_t adc_reading)
             return new_state; // Return event state for notification
         }
         else {
-            DLOG(TAG, "ADP: No state change detected: curr_battery_state=%hhu new_state=%hhu", curr_battery_state, new_state);
+            DLOG(TAG, "ADP: No state change detected: curr_battery_state=%" PRIu8 " new_state=%" PRIu8 "", curr_battery_state, new_state);
         }
         
     }

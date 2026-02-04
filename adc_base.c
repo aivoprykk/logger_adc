@@ -17,6 +17,16 @@ RTC_DATA_ATTR static uint32_t s_cached_batt_mv = 0;
 RTC_DATA_ATTR static uint32_t rtc_stored_low_raw = 0;     // persists across deep-sleep (but NOT power-off)
 RTC_DATA_ATTR static uint32_t rtc_stored_high_raw = 0;    // for hysteresis (clear threshold)
 
+#define ADC_UPDATE_MIN_DELTA_MV      15U
+#define ADC_UPDATE_MIN_INTERVAL_MS  500U
+#define ADC_UPDATE_FORCE_INTERVAL_MS 5000U
+#define ADC_WORKER_TASK_STACK_SIZE  3072
+#define ADC_WORKER_TASK_PRIORITY    (tskIDLE_PRIORITY + 3)
+
+static uint32_t s_last_calibrated_raw = 0;
+static uint32_t s_last_published_mv = 0;
+static uint32_t s_last_publish_time_ms = 0;
+
 #define ADC_SUPPRESSION_TIMEOUT_MS SEC_TO_MS(5)  // 5 seconds max suppression
 #define LOW_BAT_SEQUENCE_TIME_MS SEC_TO_MS(20)  // 20 seconds in milliseconds
 
@@ -48,9 +58,11 @@ ESP_EVENT_DEFINE_BASE(ADC_EVENT);
 const char * const _nums[] = { "0", "1", "2", "3", "4", "5", "6", "7", "8", "9" };
 inline const char * nums(int i) { return i < arr_size(_nums) ? _nums[i] : "?"; };
 #if (C_LOG_LEVEL <= LOG_INFO_NUM)
-static const char * const _adc_battery_states_str[] = { ADC_BAT_STATES(STRINGIFY) };
+#define STRINGIFY_ADC(x) STRINGIFY(ADC_EVENT_##x)
+static const char * const _adc_battery_states_str[] = { ADC_EVENT_LIST(STRINGIFY_ADC) };
 const char * adc_battery_states_str(int i) { return i >= arr_size(_adc_battery_states_str) ? "UNKNOWN_STATE" : _adc_battery_states_str[i]; };
 const char * adc_event_strings(int id) { return id >= arr_size(_adc_battery_states_str) ? "UNKNOWN_EVENT" : _adc_battery_states_str[id]; }
+#undef STRINGIFY_ADC
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
 static const char * const _adc_wake_sources_str[] = { ADC_WAKE_SOURCES(STRINGIFY) };
 const char * adc_wake_sources_str(int i) { return i >= arr_size(_adc_wake_sources_str) ? nums(i) : _adc_wake_sources_str[i]; };
@@ -74,6 +86,10 @@ const char * adc_button_wake_reasons_str(int i) { return nums(i); }
 #define TIMEOUT_MAX portMAX_DELAY
 static const TickType_t timeout_immediate = 0;
 #define RESULT_MASK (RESULT_SIZE - 1)
+
+static inline uint32_t adc_abs_diff_u32(uint32_t a, uint32_t b) {
+    return (a > b) ? (a - b) : (b - a);
+}
 
 bool adc_lock(int timeout) {
     if (!adc_ctx.xMutex) return false;
@@ -150,7 +166,7 @@ uint32_t calibrate_adc_raw(uint32_t raw_reading) {
         cal_reading = raw_reading;
     }
 
-    FUNC_ENTRY_ARGSD(TAG, "raw_reading=%lu, battery_mv=%lu", raw_reading, cal_reading);
+    FUNC_ENTRY_ARGSD(TAG, "raw_reading=%" PRIu32 ", battery_mv=%" PRIu32 "", raw_reading, cal_reading);
     return cal_reading;
 }
 
@@ -183,8 +199,8 @@ esp_err_t compute_and_store_thresholds(void) {
     apply_battery_calibration(rtc_stored_low_raw, rtc_stored_high_raw);
 
     // 7) ALSO write into ULP RAM symbol before starting ULP (see next snippet)
-    ILOG(TAG, "Computed ULP thresholds: critical_low=%lu (%lumV), critical_high=%lu (%lumV)",
-            raw_thresh, BATTERY_CRITICAL_LOW_MV, rtc_stored_high_raw, 4200UL);
+    ILOG(TAG, "Computed ULP thresholds: critical_low=%" PRIu32 " (%" PRIu32 "mV), critical_high=%" PRIu32 " (%" PRIu32 "mV)",
+            raw_thresh, (uint32_t)BATTERY_CRITICAL_LOW_MV, rtc_stored_high_raw, (uint32_t)4200UL);
     return ESP_OK;
 }
 
@@ -195,6 +211,10 @@ static inline float adc_mv_to_voltage(uint32_t raw_adc_value) {
 static inline uint32_t adc_raw_to_mv(uint32_t raw_adc_value) {
     return VOLTAGE_CONV_ADC_TO_MV_UL(raw_adc_value); // Convert ADC reading to mV
 }
+
+static bool adc_publish_voltage_locked(float voltage, uint32_t now_ms);
+static void adc_worker_task(void *arg);
+static void adc_timer_callback(void *arg);
 
 static void handle_battery_state(adc_battery_state_t state) {
     FUNC_ENTRY_ARGS(TAG, "state: %d", state);
@@ -238,63 +258,127 @@ static void handle_battery_state(adc_battery_state_t state) {
     }
 }
 
+static bool adc_publish_voltage_locked(float voltage, uint32_t now_ms) {
+    if (s_cached_batt_mv == 0) {
+        return false;
+    }
+
+    bool should_publish = false;
+    if (s_last_published_mv == 0 || s_last_publish_time_ms == 0) {
+        should_publish = true;
+    } else {
+        uint32_t delta = adc_abs_diff_u32(s_cached_batt_mv, s_last_published_mv);
+        uint32_t elapsed = now_ms - s_last_publish_time_ms;
+        if (delta >= ADC_UPDATE_MIN_DELTA_MV) {
+            should_publish = true;
+        } else if (elapsed >= ADC_UPDATE_FORCE_INTERVAL_MS) {
+            should_publish = true;
+        } else if (elapsed >= ADC_UPDATE_MIN_INTERVAL_MS && delta > 0) {
+            should_publish = true;
+        }
+    }
+
+    if (!should_publish) {
+        return false;
+    }
+
+    esp_event_post(ADC_EVENT, ADC_EVENT_UPDATE, &voltage, sizeof(voltage), pdMS_TO_TICKS(50));
+    s_last_published_mv = s_cached_batt_mv;
+    s_last_publish_time_ms = now_ms;
+    return true;
+}
+
 static adc_battery_state_t last_reported_state = ADC_BATTERY_NORMAL;  // Track last state we reported
-// ADC update function called periodically from timer to read voltage and handle state
+// ADC update function called from worker task to refresh voltage and battery state
 static void adc_update(void*arg) {
     FUNC_ENTRYD(TAG);
-    uint32_t cal_reading = 0, raw_reading = 0;
+    uint32_t raw_reading = 0;
 
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
-    if(adc_lock(100)) {
+    if (adc_lock(100)) {
         raw_reading = read_battery_adc();
         adc_unlock();
     }
 #endif
-    battery_snapshot_t* snap = battery_update_snapshot(raw_reading);
-    cal_reading = calibrate_adc_raw(snap->battery_monitor.voltage_raw);
-    s_cached_batt_mv = adc_raw_to_mv(cal_reading);
-    FUNC_ENTRY_ARGSD(TAG, "got reading:%lu, converted_to_mv:%lu", cal_reading, s_cached_batt_mv);
-    // Integrated low battery monitoring and RTC voltage update - runs with every ADC update
-    if (bat_safe_lock(10)) {
-        float current_voltage = adc_mv_to_voltage(s_cached_batt_mv);  // Convert millivolts to volts
-        esp_event_post(ADC_EVENT, ADC_EVENT_UPDATE, &current_voltage, sizeof(current_voltage), pdMS_TO_TICKS(50));
-        
-        // Only handle battery state changes, not every cycle
-        adc_battery_state_t current_state = battery_get_current_battery_state();
-        if (current_state != last_reported_state) {
-            adc_battery_state_t event_to_fire = current_state;
-            
-            // Special case: transition from CHARGING_STARTED to NORMAL means CHARGING_STOPPED
-            if ((current_state == ADC_BATTERY_NORMAL && last_reported_state == ADC_BATTERY_CHARGING)) {
-                event_to_fire = ADC_BATTERY_CHARGING_STOPPED;
-            }
-            
-            if (event_to_fire != ADC_BATTERY_NORMAL) {
-                handle_battery_state(event_to_fire);
-            }
-            last_reported_state = current_state;
-        }
-        
-        // Low battery monitoring - trigger shutdown callback when battery is critically low
-        if (snap->battery_monitor.voltage_raw < current_calibration.voltage_3V2) {
-            uint32_t ms = get_millis();
-            if (adc_ctx.low_bat_start_time_ms == 0) {
-                adc_ctx.low_bat_start_time_ms = ms;
-                ELOG(TAG, "Low battery detected: %lu mV < %lu mV - starting countdown", 
-                     s_cached_batt_mv, BATTERY_CRITICAL_LOW_MV);
-            } else if ((ms - adc_ctx.low_bat_start_time_ms) > LOW_BAT_SEQUENCE_TIME_MS) {
-                ELOG(TAG, "Battery critically low for %d seconds - triggering shutdown", 
-                     (int)FROM_K_UL(LOW_BAT_SEQUENCE_TIME_MS));
-                if (adc_ctx.low_battery_callback) {
-                    adc_ctx.low_battery_callback();
-                }
-                adc_ctx.low_bat_start_time_ms = 0; // Reset to avoid repeated calls
-            }
-        } else {
-            adc_ctx.low_bat_start_time_ms = 0;
+
+    battery_snapshot_t *snap = battery_update_snapshot(raw_reading);
+    if (!snap) {
+        WLOG(TAG, "battery snapshot unavailable - skipping update");
+        return;
+    }
+
+    uint32_t latest_raw = snap->battery_monitor.voltage_raw;
+    if (latest_raw == 0) {
+        WLOG(TAG, "invalid ADC sample (0) - skipping");
+        return;
+    }
+
+    if (latest_raw != s_last_calibrated_raw) {
+        uint32_t cal_reading = calibrate_adc_raw(latest_raw);
+        s_cached_batt_mv = adc_raw_to_mv(cal_reading);
+        s_last_calibrated_raw = latest_raw;
+        FUNC_ENTRY_ARGSD(TAG, "got reading:%" PRIu32 ", converted_to_mv:%" PRIu32 "", cal_reading, s_cached_batt_mv);
+    }
+
+    if (!bat_safe_lock(10)) {
+        WLOG(TAG, "failed to lock battery state mutex");
+        return;
+    }
+
+    uint32_t now_ms = get_millis();
+    float current_voltage = adc_mv_to_voltage(s_cached_batt_mv);
+    (void)adc_publish_voltage_locked(current_voltage, now_ms);
+
+    // Handle battery state transitions only when state changes
+    adc_battery_state_t current_state = battery_get_current_battery_state();
+    if (current_state != last_reported_state) {
+        adc_battery_state_t event_to_fire = current_state;
+
+        if (current_state == ADC_BATTERY_NORMAL && last_reported_state == ADC_BATTERY_CHARGING) {
+            event_to_fire = ADC_BATTERY_CHARGING_STOPPED;
         }
 
-        bat_safe_unlock();
+        if (event_to_fire != ADC_BATTERY_NORMAL) {
+            handle_battery_state(event_to_fire);
+        }
+        last_reported_state = current_state;
+    }
+
+    if (snap->battery_monitor.voltage_raw < current_calibration.voltage_3V2) {
+        if (adc_ctx.low_bat_start_time_ms == 0) {
+            adc_ctx.low_bat_start_time_ms = now_ms;
+            ELOG(TAG, "Low battery detected: %" PRIu32 " mV < %" PRIu32 " mV - starting countdown",
+                 s_cached_batt_mv, (uint32_t)BATTERY_CRITICAL_LOW_MV);
+        } else if ((now_ms - adc_ctx.low_bat_start_time_ms) > LOW_BAT_SEQUENCE_TIME_MS) {
+            ELOG(TAG, "Battery critically low for %d seconds - triggering shutdown",
+                 (int)FROM_K_UL(LOW_BAT_SEQUENCE_TIME_MS));
+            if (adc_ctx.low_battery_callback) {
+                adc_ctx.low_battery_callback();
+            }
+            adc_ctx.low_bat_start_time_ms = 0;
+        }
+    } else {
+        adc_ctx.low_bat_start_time_ms = 0;
+    }
+
+    bat_safe_unlock();
+}
+
+static void adc_worker_task(void *arg) {
+    (void)arg;
+    while (true) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!adc_initialized) {
+            continue;
+        }
+        adc_update(NULL);
+    }
+}
+
+static void adc_timer_callback(void *arg) {
+    (void)arg;
+    if (adc_ctx.worker_task) {
+        xTaskNotifyGive(adc_ctx.worker_task);
     }
 }
 
@@ -326,14 +410,14 @@ float adc_get_cached_batt_volt(void) {
     voltage = VOLTAGE_CONV_V(adc_ctx.adc_raw);
 #endif
     battery_snapshot_t* snap = battery_get_snapshot();
-    FUNC_ENTRY_ARGSD(TAG, "adc_raw: %hu, cali_v: %lu, volt: %f", snap->battery_monitor.voltage_raw, s_cached_batt_mv, voltage);
+    FUNC_ENTRY_ARGSD(TAG, "adc_raw: %" PRIu16 ", cali_v: %" PRIu32 ", volt: %f", snap->battery_monitor.voltage_raw, s_cached_batt_mv, voltage);
     return voltage;
 }
 
 /* Battery monitoring API - thread-safe access to battery data */
 bool adc_check_battery_level(void) {
     if (!adc_initialized) return true; // Default to safe if not initialized
-    FUNC_ENTRY_ARGS(TAG, " voltage_raw: %hu, threshold_3V2: %hu",
+    FUNC_ENTRY_ARGS(TAG, " voltage_raw: %" PRIu16 ", threshold_3V2: %" PRIu16 "",
                     battery_get_snapshot()->battery_monitor.voltage_raw,
                     current_calibration.voltage_3V2);
     return (battery_get_snapshot()->battery_monitor.voltage_raw >= current_calibration.voltage_3V2);
@@ -447,7 +531,7 @@ uint8_t adc_calc_bat_perc(float adc) {
         }
     } else ret = 100;
     done:
-    DLOG(TAG,"[%s] voltage: %f converted: %lu mV perc: %hhu", __func__, adc, kadc, ret);
+    DLOG(TAG,"[%s] voltage: %f converted: %" PRIu32 " mV perc: %" PRIu8 "", __func__, adc, kadc, ret);
     return ret;
 }
 
@@ -531,21 +615,44 @@ esp_err_t adc_init(void) {
 #elif defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
     adc_oneshot_init();
 #endif
+
+    if (!adc_ctx.worker_task) {
+        BaseType_t task_created = xTaskCreate(adc_worker_task,
+                                             "adc_worker",
+                                             ADC_WORKER_TASK_STACK_SIZE,
+                                             NULL,
+                                             ADC_WORKER_TASK_PRIORITY,
+                                             &adc_ctx.worker_task);
+        if (task_created != pdPASS) {
+            ELOG(TAG, "[%s] Failed to create ADC worker task", __func__);
+            adc_ctx.worker_task = NULL;
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     // Initialize periodic ADC tasks for regular readings
     // adc_update(0);
     const esp_timer_create_args_t periodic_timer_args = {
-        .callback = &adc_update,
+        .callback = &adc_timer_callback,
         .name = "periodic_adc",
         .arg = NULL
     };
     if(esp_timer_create(&periodic_timer_args, &adc_ctx.adc_timer)){
         ELOG(TAG, "[%s] Failed to create periodic timer", __func__);
+        vTaskDelete(adc_ctx.worker_task);
+        adc_ctx.worker_task = NULL;
         return ESP_FAIL;
     }
     if(esp_timer_start_periodic(adc_ctx.adc_timer, MS_TO_US(ADC_UPDATE_INTERVAL_MS))) {
         ELOG(TAG, "[%s] Failed to start periodic timer", __func__);
+        esp_timer_delete(adc_ctx.adc_timer);
+        adc_ctx.adc_timer = NULL;
+        vTaskDelete(adc_ctx.worker_task);
+        adc_ctx.worker_task = NULL;
         return ESP_FAIL;
     }
+
+    xTaskNotifyGive(adc_ctx.worker_task);
 
     // Initialize battery safety mutex
     if (!adc_ctx.batMutex) {
@@ -572,6 +679,10 @@ esp_err_t adc_deinit() {
         esp_timer_stop(adc_ctx.adc_timer);
         esp_timer_delete(adc_ctx.adc_timer);
         adc_ctx.adc_timer = NULL;
+    }
+    if (adc_ctx.worker_task) {
+        vTaskDelete(adc_ctx.worker_task);
+        adc_ctx.worker_task = NULL;
     }
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
     adc_oneshot_deinit();

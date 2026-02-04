@@ -3,7 +3,7 @@
 #include "adc_snapshot.h"
 #include "adc_ulp.h"
 
-#include "esp_timer.h"
+// #include "esp_timer.h"
 #include "string.h"
 
 #include "ulp_program.h"
@@ -85,7 +85,7 @@ void battery_set_calibration(const battery_calibration_t* calibration) {
 
 void battery_dump_calibration(const battery_calibration_t* calibration, const char* context) {
     if(!calibration) return;
-    ILOG(TAG, "%s Battery Calibration: 3.2V: %hu, 3.6V: %hu, 3.8V: %hu, 4.0V: %hu, 4.1V: %hu, 4.2V: %hu", 
+    ILOG(TAG, "%s Battery Calibration: 3.2V: %" PRIu16 ", 3.6V: %" PRIu16 ", 3.8V: %" PRIu16 ", 4.0V: %" PRIu16 ", 4.1V: %" PRIu16 ", 4.2V: %" PRIu16 "", 
         context, calibration->voltage_3V2, calibration->voltage_3V6, calibration->voltage_3V8, 
         calibration->voltage_4V0, calibration->voltage_4V1, calibration->voltage_4V2);
 }
@@ -228,7 +228,7 @@ battery_snapshot_t* battery_update_snapshot(uint16_t adc_reading) {
 void monitor_dump(const battery_monitor_t *monitor, const char* tag) {
     if (!monitor) return;
     if(!monitor->slow_window) 
-        ILOG(TAG, "%s  Monitor: voltage_raw=%hu data_source=%d", tag, monitor->voltage_raw, monitor->monitor_src);
+        ILOG(TAG, "%s  Monitor: voltage_raw=%" PRIu16 " data_source=%d", tag, monitor->voltage_raw, monitor->monitor_src);
     if(monitor->battery_state) adc_current_state_print(monitor->battery_state, 
         "  Battery State");
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
@@ -246,7 +246,7 @@ void monitor_dump(const battery_monitor_t *monitor, const char* tag) {
 
 void snapshot_dump(const battery_snapshot_t *snapshot, const char* tag) {
     if(!snapshot) return;
-    ILOG(TAG, "%s Snapshot: snapshot_timestamp: %lu, snapshot_valid: %d",
+    ILOG(TAG, "%s Snapshot: snapshot_timestamp: %" PRIu32 ", snapshot_valid: %d",
          tag, snapshot->snapshot_timestamp, snapshot->snapshot_valid);
     monitor_dump(&snapshot->battery_monitor, tag);
 }

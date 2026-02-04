@@ -7,7 +7,7 @@ static const char *TAG = "adc_ulp";
 #include "adc_ulp.h"
 
 #include "ulp_program.h"
-#include "ulp.h"
+// #include "ulp.h"
 
 static bool ulp_live_snap_initialized = false;
 static uint16_t initial_samples[ULP_ADC_HISTORY_SIZE] = {0};
@@ -125,7 +125,7 @@ void ulp_take_last_snapshot(battery_snapshot_t *snap, uint32_t timeout_ms) {
         vTaskDelay(pdMS_TO_TICKS(5));
         cycle_count = ULP_GET_U32(ulp_cycle_count);
     }
-    FUNC_ENTRY_ARGSD(TAG, "cycle_count=%lu, elapsed_time=%llu", ULP_GET_U32(ulp_cycle_count), (esp_timer_get_time()- snap_timestamp));
+    FUNC_ENTRY_ARGSD(TAG, "cycle_count=%" PRIu32 ", elapsed_time=%llu", ULP_GET_U32(ulp_cycle_count), (esp_timer_get_time()- snap_timestamp));
     snap->snapshot_timestamp = cycle_count;
 
     battery_monitor_t * bm = &snap->battery_monitor;
@@ -172,7 +172,7 @@ void ulp_take_last_snapshot(battery_snapshot_t *snap, uint32_t timeout_ms) {
 #endif
 #if defined(DEBUG_ULP_VALUES)
     snapshot_dump(snap, " === ULP Live");
-    ILOG(TAG, " === ULP Debug (delta_min=%hd < delta_abs=%hd) samples_needed=%lu adp_delta_path=%hd ===",
+    ILOG(TAG, " === ULP Debug (delta_min=%hd < delta_abs=%hd) samples_needed=%" PRIu32 " adp_delta_path=%hd ===",
             (int16_t)ULP_GET_U32(ulp_debug_delta_min),
             (int16_t)ULP_GET_U32(ulp_delta_abs),
             ULP_GET_U32(ulp_plateau_samples_needed),

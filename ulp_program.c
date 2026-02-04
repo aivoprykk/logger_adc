@@ -3,10 +3,10 @@
 #if defined(CONFIG_ULP_COPROC_ENABLED)
 #include "esp_system.h"
 #include "ulp.h"
-#include "soc/soc.h"
+// #include "soc/soc.h"
 
 #include "ulp_program.h"
-#include "adc_snapshot.h"
+// #include "adc_snapshot.h"
 #include "ulp_adc_config.h"
 #include "adc_ulp.h"
 
@@ -32,7 +32,7 @@ static void reset_ulp_vars(enum reset_mode_e mode) {
     FUNC_ENTRY(TAG);
     if(mode >= RESET_MODE_ON_START) {
         if(mode == RESET_MODE_ON_START) {
-            DLOG(TAG, "Preserved last_wake_status=0x%02lX for next wake comparison", ULP_GET_U32(ulp_last_battery_state));
+            DLOG(TAG, "Preserved last_wake_status=0x%" PRIx32 " for next wake comparison", ULP_GET_U32(ulp_last_battery_state));
         }
         else if (mode == RESET_MODE_ON_INIT) { // init state
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
@@ -120,12 +120,12 @@ esp_err_t init_ulp_program(void) {
     
     start_ulp_program();
     ulp_prog_initialized = true;
-    ILOG(TAG, "ULP program loaded (%u bytes, %u words), last_wake_status initialized to 0",
+    ILOG(TAG, "ULP program loaded (%zu bytes, %zu words), last_wake_status initialized to 0",
          ulp_prog_size_bytes, ulp_prog_size_words);
     DLOG(TAG, "Raw ULP variable check (first boot - binary loaded):");
-    DLOG(TAG, "  Thresholds: low=%lu, rapid_change=%d",
+    DLOG(TAG, "  Thresholds: low=%" PRIu32 ", rapid_change=%d",
            ULP_GET_U32(ulp_calibrated_voltage_3V2), ADC_RAPID_CHANGE_THRESHOLD);
-    DLOG(TAG, "  last_result addr=%p, value=0x%08lX (%lu)",
+    DLOG(TAG, "  last_result addr=%p, value=0x%08"PRIx32" (%" PRIu32 ")",
             &ulp_last_result, ULP_GET_U32(ulp_last_result), ULP_GET_U32(ulp_last_result));
     return ESP_OK;
 }
@@ -198,7 +198,7 @@ void resume_ulp_program(void)
     vTaskDelay(pdMS_TO_TICKS(ULP_CYCLE_TIME_MS));
     uint32_t cycle_after = ULP_GET_U32(ulp_cycle_count);
 
-    ILOG(TAG, "...done: cycle_count: before=%lu, after_%dms=%lu (delta=%ld)",
+    ILOG(TAG, "...done: cycle_count: before=%" PRIu32 ", after_%dms=%" PRIu32 " (delta=%"PRId32")",
          cycle_before, ULP_CYCLE_TIME_MS, cycle_after, (int32_t)(cycle_after - cycle_before));
 
     if (cycle_after == cycle_before) {
