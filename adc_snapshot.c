@@ -50,7 +50,7 @@ uint8_t should_wake_for_battery_state(uint8_t new_battery_state, uint8_t last_pa
     if (new_battery_state == ADC_BATTERY_CHARGING) {
         return 1;
     }
-    
+
     // Rule 2: Don't wake for critical low if last was also critical low
     if (new_battery_state == ADC_BATTERY_CRITICAL_LOW) {
         if (last_source == WAKE_SOURCE_BATTERY && last_bat_status == ADC_BATTERY_CRITICAL_LOW) {
@@ -58,7 +58,7 @@ uint8_t should_wake_for_battery_state(uint8_t new_battery_state, uint8_t last_pa
         }
         return 1; // First critical low
     }
-    
+
 #if defined(CONFIG_ULP_BUTTON_ENABLED)
     // Rule 3: Wake for button state changes
     if (last_source == WAKE_SOURCE_BUTTON) {
@@ -168,7 +168,7 @@ void battery_handle_button_event(battery_monitor_t* monitor , button_state_t but
     // monitor->state_change_count++;
     // monitor->last_battery_state_change = esp_timer_get_time();
     monitor->snapshot_timestamp = esp_timer_get_time();
-    
+
     // Update common snapshot
     // memcpy(&current_snapshot, &c_snapshot, sizeof(battery_snapshot_t));
 }

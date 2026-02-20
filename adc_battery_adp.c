@@ -385,7 +385,7 @@ static uint8_t adp_plateau_detection(adc_plateau_t* plateau, uint16_t avg, uint1
 
 static adc_battery_state_t check_fast_voltage_changes(adc_plateau_t* plateau, uint16_t avg, int16_t difference, adc_battery_state_t curr_battery_state) {
     adc_battery_state_t result_state = curr_battery_state;  // Track the result
-    
+
     if (avg > current_calibration.voltage_4V2) {
         if (curr_battery_state != ADC_BATTERY_CHARGING) {
             DLOG(TAG, "ADP: charging detected (avg=%" PRIu16 ")", avg);
@@ -407,7 +407,7 @@ static adc_battery_state_t check_fast_voltage_changes(adc_plateau_t* plateau, ui
             result_state = ADC_BATTERY_NORMAL;
         }
     }
-    
+
     if (result_state != curr_battery_state) {
         plateau->processing = 0;  // Reset processing only on actual change
     }
@@ -490,7 +490,7 @@ uint8_t battery_monitor_update(battery_monitor_t* monitor, uint16_t adc_reading)
         else {
             DLOG(TAG, "ADP: No state change detected: curr_battery_state=%" PRIu8 " new_state=%" PRIu8 "", curr_battery_state, new_state);
         }
-        
+
     }
     return curr_battery_state; // No state change
 }

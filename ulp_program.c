@@ -117,7 +117,7 @@ esp_err_t init_ulp_program(void) {
     compute_and_store_ulp_thresholds();
 
     reset_ulp_vars(RESET_MODE_ON_INIT);
-    
+
     start_ulp_program();
     ulp_prog_initialized = true;
     ILOG(TAG, "ULP program loaded (%zu bytes, %zu words), last_wake_status initialized to 0",

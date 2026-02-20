@@ -214,7 +214,7 @@ static uint32_t get_recent_average_n(uint8_t num_readings) {
     uint32_t sum = calibrate_adc_raw(raw_avg);  // Use calibration function
 #else
     uint8_t available = adc_ctx.adc_buffer.count;
-    
+
     // Clamp to available readings
     if (num_readings > available) {
         num_readings = available;
@@ -222,10 +222,10 @@ static uint32_t get_recent_average_n(uint8_t num_readings) {
     if (num_readings < 1) {
         return get_recent_reading(0); // Return current reading
     }
-    
+
     uint32_t sum = 0;
     uint8_t idx = (adc_ctx.adc_buffer.head - 1) & RESULT_MASK;
-    
+
     for (uint8_t i = 0; i < num_readings; i++) {
         sum += adc_ctx.adc_buffer.result[idx];
         idx = (idx - 1) & RESULT_MASK;
@@ -254,10 +254,10 @@ static uint32_t get_progressive_average(void) {
     uint8_t max = RESULT_SIZE;
 #endif
     if (available == 0) return 0;
-    
+
     // Progressive stages based on buffer fill percentage
     uint8_t fill_percent = (available * 100) / max;
-    
+
     if (fill_percent < 25) {
         // 0-25% filled: use current reading or tiny average
         return (available < 2) ? get_recent_reading(0) : get_recent_average_n(2);
@@ -296,13 +296,13 @@ uint32_t calibrate_adc_raw(uint32_t raw) {
     if (raw == 0) {
         return 0; // Invalid reading
     }
-    
+
     uint32_t calibrated_voltage = 0;
-    
+
 // #if defined(CONFIG_LOGGER_ADC_MODE_ULP)
 //     // 4-point calibration for 3.2V-4.2V range
 //     /* Direct calibration to battery voltage for 100k+100k divider */
-    
+
 //     if (raw < 1752) {
 //         // 1752 raw → 3200mV actual (should be 2×1411=2822, but is 3200)
 //         calibrated_voltage = (raw * 3200UL) / 1752;
@@ -400,7 +400,7 @@ static void post_battery_state_event(adc_battery_state_t state, const char* sour
             return;
         }
     }
-    
+
     // Check event suppression (WiFi transitions, etc.)
     int32_t event_id;
     switch (state) {
@@ -426,35 +426,35 @@ static void post_battery_state_event(adc_battery_state_t state, const char* sour
             // Normal state - no event needed
             return;
     }
-    
+
     // Check if this specific event should be suppressed
     if (adc_should_suppress_event(event_id)) {
         ILOG(TAG, "%s event suppressed during system transition: %s", source, adc_event_strings(event_id));
         return;
     }
-    
+
     // Additional charge state consistency logic
     if (state == ADC_BATTERY_CHARGING_STARTED || state == ADC_BATTERY_CHARGING_STOPPED) {
         bool current_charging = get_current_charging_state();
         bool new_charging = (state == ADC_BATTERY_CHARGING_STARTED);
-        
+
         // Prevent redundant charge state changes
         if (current_charging == new_charging) {
             ILOG(TAG, "%s redundant charge state change filtered: already %s", source,
                  new_charging ? "charging" : "not charging");
             return;
         }
-        
+
         // Update internal ADC state to reflect the change we're about to post
         last_adc_battery_state = state;
-        
+
         // Sync charging state to ULP
 // #if defined(CONFIG_ULP_COPROC_ENABLED)
 //         bool charging = (state == ADC_BATTERY_CHARGING_STARTED);
 //         ULP_SET_U32(ulp_charging_active, charging ? 1 : 0);
 // #endif
     }
-    
+
     // Post the event
     switch (state) {
         case ADC_BATTERY_LOW:
@@ -679,7 +679,7 @@ static bool detect_charge_start(uint32_t raw_adc, adc_analysis_t analysis) {
     if (analysis.trend != TREND_RISING || analysis.rate_of_change <= 0) {
         return false;
     }
-    
+
     // Define thresholds directly in raw ADC units
     uint32_t rise_threshold;
 
@@ -706,17 +706,17 @@ static bool detect_charge_start(uint32_t raw_adc, adc_analysis_t analysis) {
 static bool detect_charge_stop(uint32_t raw_adc, adc_analysis_t analysis, uint32_t peak_raw_adc) {
     // Calculate drop from charging peak (in raw units)
     uint32_t drop_from_peak = peak_raw_adc - raw_adc;
-    
+
     // Convert 80mV drop to raw ADC units
     // 80mV in raw = (80 × 1752) / 3200 = 44 raw
     bool significant_drop = (drop_from_peak >= fall_threshold[0]); // 80mV drop equivalent
-    
+
     // Convert -20mV rate to raw ADC units  
     // -20mV in raw = (20 × 1752) / 3200 = 11 raw (use absolute value)
     bool negative_roc = (analysis.rate_of_change < -fall_threshold[1]);
 
     bool falling_trend = (analysis.trend == TREND_FALLING);
-    
+
     return significant_drop && falling_trend && negative_roc;
 }
 
@@ -741,7 +741,7 @@ static adc_battery_state_t get_battery_state(void) {
     static uint32_t charge_peak_voltage = 0;
     const uint32_t current_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
     const uint32_t DEBOUNCE_MS = 3000;
-    
+
     /* Use cached snapshot and calibrated value */
     uint32_t voltage_mv = adc_get_cached_batt_mv();
     adc_snapshot_t snap = {0};
@@ -763,17 +763,17 @@ static adc_battery_state_t get_battery_state(void) {
 
     FUNC_ENTRY_ARGS(TAG, "voltage:%lumV, raw: %lu, charging:%d, trend:%d, roc:%ld",
            voltage_mv, voltage_mv_raw, is_charging, analysis.trend, analysis.rate_of_change);
-    
+
     debug_ulp_status();
 
     // 1. SAFETY FIRST: Critical low always triggers
     if (voltage_mv < BATTERY_CRITICAL_LOW_MV) {
         return ADC_BATTERY_CRITICAL_LOW;
     }
-    
+
     // 2. CHARGE DETECTION (only when debounce period passed)
     if ((current_ms - last_charge_change_ms) >= DEBOUNCE_MS) {
-        
+
         // --- CHARGING STARTED DETECTION ---
         if (!is_charging) {
             bool charge_start_detected = detect_charge_start(voltage_mv_raw, analysis);
@@ -809,7 +809,7 @@ static adc_battery_state_t get_battery_state(void) {
                 return ADC_BATTERY_CHARGING_STARTED;
             }
         }
-        
+
         // --- CHARGING STOPPED DETECTION ---
         if (is_charging) {
             bool charge_stop_detected = detect_charge_stop(voltage_mv_raw, analysis, charge_peak_voltage);
@@ -844,7 +844,7 @@ static adc_battery_state_t get_battery_state(void) {
             }
         }
     }
-    
+
     // 3. STATE REPORTING
     if (is_charging) {
         // Check if charging has stabilized (been active for more than 30 seconds)
@@ -892,10 +892,10 @@ static adc_analysis_t analyze_adc_readings(uint32_t voltage_mv, uint8_t availabl
     DLOG(TAG, "ADC readings: current=%lu, prev1=%lu, prev2=%lu", current, prev1, prev2);
 
     if (available >= trend_detection[1].readings) {
-        
+
         // Use medium-term rate of change (more stable)
         result.rate_of_change = (int32_t)current - (int32_t)prev2;
-        
+
         // FIXED: More conservative trend detection
         if (result.rate_of_change > trend_detection[1].threshold) {
             result.trend = TREND_RISING;
@@ -920,7 +920,7 @@ static adc_analysis_t analyze_adc_readings(uint32_t voltage_mv, uint8_t availabl
     uint32_t cand = result.noise_mad * ADC_NOISE_MULTIPLIER;
     if (cand > dyn_thr) dyn_thr = cand;
     result.dyn_threshold = dyn_thr;
-    
+
     return result;
 }
 
@@ -942,7 +942,7 @@ static void handle_adc_battery_state(void) {
     // Only post events on state changes
     if (new_state != last_adc_battery_state) {
         // const char* state_names[] = {"NORMAL", "LOW", "HIGH", "CHARGING_STARTED", "CHARGING_STOPPED", "CRITICAL_LOW"};
-        
+
         // Check if we should suppress state changes during transitions
         if (s_adc_events_suppressed) {
             // Always allow critical low battery state changes - safety first
@@ -952,10 +952,10 @@ static void handle_adc_battery_state(void) {
                 return;  // Suppress the state change entirely
             }
         }
-        
+
         DLOG(TAG, "State change: %s -> %s (%lu mV)", 
              adc_battery_states_str(last_adc_battery_state), adc_battery_states_str(new_state), voltage_mv);
-        
+
         // Priority-based logging
         if (new_state == ADC_BATTERY_CHARGING_STARTED) {
             ILOG(TAG, "PRIORITY 1: Charging started event");
@@ -964,17 +964,17 @@ static void handle_adc_battery_state(void) {
         } else if (new_state == ADC_BATTERY_CHARGING_STOPPED) {
             ILOG(TAG, "PRIORITY 3: Charging stopped event");
         }
-        
+
         post_battery_state_event(new_state, "ADC");
-        
+
         if (new_state == ADC_BATTERY_CHARGING_STARTED || 
             new_state == ADC_BATTERY_CHARGING_STOPPED) {
             force_instant_voltage = true;
         }
-        
+
 
         last_adc_battery_state = new_state;
-        
+
         // Sync charging state to ULP
 // #if defined(CONFIG_ULP_COPROC_ENABLED)
 //         bool charging = (new_state == ADC_BATTERY_CHARGING_STARTED);
@@ -991,33 +991,33 @@ static void handle_adc_battery_state(void) {
 void diagnose_adc_pin_conflicts(void) {
     ILOG(TAG, "=== ADC Pin Conflict Diagnostic (LilyGO Board) ===");
     ILOG(TAG, "ADC Channel: %d", CONFIG_ADC_CHANNEL);
-    
+
     // Take multiple quick readings to check for stability
     float readings[5];
     bool stable = true;
-    
+
     for (int i = 0; i < 5; i++) {
         readings[i] = adc_get_cached_batt_volt();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    
+
     // Check for excessive variation (sign of interference)
     float min_v = readings[0], max_v = readings[0];
     for (int i = 1; i < 5; i++) {
         if (readings[i] < min_v) min_v = readings[i];
         if (readings[i] > max_v) max_v = readings[i];
     }
-    
+
     float variation = max_v - min_v;
     if (variation > 0.5f) {  // > 500mV variation suggests interference
         stable = false;
         WLOG(TAG, "High voltage variation detected: %.3fV - possible pin conflict", variation);
     }
-    
+
     ILOG(TAG, "Voltage readings: %.3f, %.3f, %.3f, %.3f, %.3f", 
          readings[0], readings[1], readings[2], readings[3], readings[4]);
     ILOG(TAG, "Variation: %.3fV, Stable: %s", variation, stable ? "YES" : "NO");
-    
+
     if (!stable) {
         WLOG(TAG, "ADC pin may be shared with other peripherals:");
         WLOG(TAG, "- Check if SD card, sensors, or display power management use same pin");
@@ -1026,7 +1026,7 @@ void diagnose_adc_pin_conflicts(void) {
     } else {
         ILOG(TAG, "ADC readings appear stable");
     }
-    
+
     ILOG(TAG, "=== End ADC Diagnostic ===");
 }
 #endif
@@ -1148,7 +1148,7 @@ static uint32_t adc_read_count(uint16_t count, uint16_t delay) {
 
     if (count == 0) return 0;
     if (count > 16) count = 16;
-    
+
     uint32_t sum = 0;
     uint32_t min_val = UINT32_MAX;
     uint32_t max_val = 0;
@@ -1157,10 +1157,10 @@ static uint32_t adc_read_count(uint16_t count, uint16_t delay) {
     for (uint16_t i = 0; i < count; i++) {
         uint32_t reading = adc_read_raw();
         sum += reading;
-        
+
         if (reading < min_val) min_val = reading;
         if (reading > max_val) max_val = reading;
-        
+
         if (delay) vTaskDelay(pdMS_TO_TICKS(delay));
     }
 
@@ -1230,13 +1230,13 @@ static void adc_update(void*arg) {
         // printf ("Voltage: %.3f V\n", current_voltage);
         // Post voltage update event for main.c to handle RTC context updates  
         esp_event_post(ADC_EVENT, ADC_EVENT_UPDATE, &current_voltage, sizeof(current_voltage), pdMS_TO_TICKS(50));
-        
+
         // Low battery monitoring - trigger shutdown callback when battery is critically low
         static uint32_t low_bat_start_time = 0;
-        
+
         if (s_cached_batt_mv < BATTERY_CRITICAL_LOW_MV) {
             uint32_t now = get_millis();
-            
+
             if (low_bat_start_time == 0) {
                 low_bat_start_time = now;
                 ELOG(TAG, "Low battery detected: %lu mV < %lu mV - starting countdown", 
@@ -1322,7 +1322,7 @@ esp_err_t adc_init(void) {
     }
 
     adc_calibration_init(_ADC_UNIT_0, _ADC_CHANNEL_0, _ADC_ATTEN);
-    
+
 #if defined(CONFIG_LOGGER_ADC_MODE_ULP)
     /* ULP Primary Mode: Use ULP's raw ADC with manual voltage conversion */
     /* Note: ULP configures GPIO in RTC mode, which disconnects it from digital ADC */
@@ -1447,14 +1447,14 @@ esp_err_t adc_deinit() {
         vSemaphoreDelete(adc_ctx.xMutex);
         adc_ctx.xMutex = NULL;
     }
-    
+
     // Cleanup low battery timer
     if (adc_ctx.low_bat_timer) {
         esp_timer_stop(adc_ctx.low_bat_timer);
         esp_timer_delete(adc_ctx.low_bat_timer);
         adc_ctx.low_bat_timer = NULL;
     }
-    
+
     // Cleanup battery safety mutex
     if(adc_ctx.batMutex != NULL){
         vSemaphoreDelete(adc_ctx.batMutex);
@@ -1584,7 +1584,7 @@ bool adc_should_suppress_event(int32_t event_id) {
     if (!s_adc_events_suppressed) {
         return false;
     }
-    
+
     // Auto-resume after timeout to prevent permanent suppression
     int64_t current_time = FROM_K_UL(esp_timer_get_time());
     if (current_time - s_adc_suppression_start_time > ADC_SUPPRESSION_TIMEOUT_MS) {
@@ -1592,19 +1592,19 @@ bool adc_should_suppress_event(int32_t event_id) {
         adc_resume_events("timeout");
         return false;
     }
-    
+
     // Suppress charge-related events during transitions (state changes are prevented at source)
     if (event_id == ADC_EVENT_CHARGE_STARTED || event_id == ADC_EVENT_CHARGE_STOPPED) {
         DLOG(TAG, "[%s] Suppressing ADC charge event during transition: %s", __func__, adc_event_strings(event_id));
         return true;
     }
-    
+
     // Allow critical battery events to pass through
     if (event_id == ADC_EVENT_BATTERY_CRITICAL) {
         WLOG(TAG, "[%s] Allowing critical battery event despite suppression", __func__);
         return false;
     }
-    
+
     // Suppress other battery state changes during transitions
     return true;
 }

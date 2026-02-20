@@ -75,6 +75,7 @@ void adc_set_low_battery_callback(void (*callback)(void)); /* Set callback for l
 void adc_suppress_events(const char* reason);       /* Suppress ADC events with reason logging */
 void adc_resume_events(const char* reason);         /* Resume ADC events with reason logging */
 bool adc_should_suppress_event(int event_id);   /* Check if specific event should be suppressed */
+void adc_set_filter_callback(bool (*cb)(void));
 
 /* Forward declarations for app mode context - defined in main module */
 typedef enum app_mode_s app_mode_t;
@@ -103,7 +104,7 @@ bool adc_ulp_button_long_press_detected(void);             /* Check if ULP detec
 
 /**
  * @brief Resume ULP program after ULP wake (preserves ADC history)
- * 
+ *
  * Resumes ULP execution without clearing ADC history. Used when going back to
  * sleep immediately after processing a ULP wake event. Preserves monitoring
  * state so rapid change detection continues to work.

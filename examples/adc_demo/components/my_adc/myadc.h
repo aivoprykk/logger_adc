@@ -13,5 +13,5 @@ void init_ulp_program(void);
 void start_ulp_program(void);
 
 void take_measurement(void);
-    
+
 #endif /* DDFACF95_9B53_4E09_A525_8DBF0F8607D9 */

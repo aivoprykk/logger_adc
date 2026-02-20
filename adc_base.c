@@ -6,7 +6,7 @@
 
 #include "adc_snapshot.h"
 #include "ulp_config.h"
-#include "main.h"  // For should_filter_charge_events
+// #include "main.h"  // For should_filter_charge_events
 
 static const char *TAG = "adc_base";
 
@@ -20,7 +20,7 @@ RTC_DATA_ATTR static uint32_t rtc_stored_high_raw = 0;    // for hysteresis (cle
 #define ADC_UPDATE_MIN_DELTA_MV      15U
 #define ADC_UPDATE_MIN_INTERVAL_MS  500U
 #define ADC_UPDATE_FORCE_INTERVAL_MS 5000U
-#define ADC_WORKER_TASK_STACK_SIZE  3072
+#define ADC_WORKER_TASK_STACK_SIZE  2560
 #define ADC_WORKER_TASK_PRIORITY    (tskIDLE_PRIORITY + 3)
 
 static uint32_t s_last_calibrated_raw = 0;
@@ -93,7 +93,7 @@ static inline uint32_t adc_abs_diff_u32(uint32_t a, uint32_t b) {
 
 bool adc_lock(int timeout) {
     if (!adc_ctx.xMutex) return false;
-    const TickType_t timeout_ticks = (timeout == -1) ? TIMEOUT_MAX : 
+    const TickType_t timeout_ticks = (timeout == -1) ? TIMEOUT_MAX :
                                      (timeout == 0) ? timeout_immediate : pdMS_TO_TICKS(timeout);
     return xSemaphoreTake(adc_ctx.xMutex, timeout_ticks) == pdTRUE;
 }
@@ -154,7 +154,7 @@ uint32_t calibrate_adc_raw(uint32_t raw_reading) {
     if (raw_reading == 0) {
         return 0; // Invalid reading
     }
-    
+
     uint32_t cal_reading = 0;
 
     /* Regular ADC Mode: Use hardware calibration if available */
@@ -219,7 +219,7 @@ static void adc_timer_callback(void *arg);
 static void handle_battery_state(adc_battery_state_t state) {
     FUNC_ENTRY_ARGS(TAG, "state: %d", state);
     // Check if we should filter events based on app mode
-    if (should_filter_charge_events()) {
+    if (adc_ctx.should_filter_charge_events && adc_ctx.should_filter_charge_events()) {
         // During boot/shutdown - only allow critical events to pass through
         if (state != ADC_BATTERY_CRITICAL_LOW) {
             WLOG(TAG, "charge event filtered during app mode transition: state=%d", state);
@@ -232,9 +232,9 @@ static void handle_battery_state(adc_battery_state_t state) {
         ILOG(TAG, "%s event suppressed during system transition: %s", __func__, adc_event_strings(state));
         return;
     }
-    
+
     // Post the event
-    float current_voltage = adc_mv_to_voltage(s_cached_batt_mv); 
+    float current_voltage = adc_mv_to_voltage(s_cached_batt_mv);
     switch (state) {
         case ADC_BATTERY_CHARGING:
             ILOG(TAG, "%s detected %s: %.02f", __func__, adc_battery_states_str(ADC_BATTERY_CHARGING), current_voltage);
@@ -399,7 +399,7 @@ end:
 float adc_get_cached_batt_volt(void) {
     FUNC_ENTRY(TAG);
     float voltage;
-#if !defined(CONFIG_LOGGER_ADC_MODE_CONTINUOUS)    
+#if !defined(CONFIG_LOGGER_ADC_MODE_CONTINUOUS)
     // Validate reading against board-specific thresholds
 #ifdef USE_CLAMPED_VOLTAGE
     voltage = validate_and_clamp_voltage_mv(s_cached_batt_mv);
@@ -464,7 +464,7 @@ bool adc_should_suppress_event(int event_id) {
     if (!adc_ctx.events_suppressed) {
         return false;
     }
-    
+
     // Auto-resume after timeout to prevent permanent suppression
     int64_t current_time = FROM_K_UL(esp_timer_get_time());
     if (current_time - adc_ctx.suppression_start_time_ms > ADC_SUPPRESSION_TIMEOUT_MS) {
@@ -472,19 +472,19 @@ bool adc_should_suppress_event(int event_id) {
         adc_resume_events("timeout");
         return false;
     }
-    
+
     // Suppress charge-related events during transitions (state changes are prevented at source)
     if (event_id == ADC_EVENT_CHARGING || event_id == ADC_EVENT_CHARGING_STOPPED) {
         DLOG(TAG, "[%s] Suppressing ADC charge event during transition: %s", __func__, adc_event_strings(event_id));
         return true;
     }
-    
+
     // Allow critical battery events to pass through
     if (event_id == ADC_EVENT_CRITICAL_LOW) {
         WLOG(TAG, "[%s] Allowing critical battery event despite suppression", __func__);
         return false;
     }
-    
+
     // Suppress other battery state changes during transitions
     return true;
 }
@@ -594,6 +594,14 @@ void adc_calibration_deinit(void) {
 }
 
 
+void adc_set_filter_callback(bool (*cb)(void)) {
+    if (cb) {
+        adc_ctx.should_filter_charge_events = cb;
+    } else {
+        adc_ctx.should_filter_charge_events = NULL;
+    }
+}
+
 esp_err_t adc_init(void) {
     FUNC_ENTRY(TAG);
     if(adc_initialized) return ESP_OK; // Already initialized
@@ -691,7 +699,7 @@ esp_err_t adc_deinit() {
         vSemaphoreDelete(adc_ctx.xMutex);
         adc_ctx.xMutex = NULL;
     }
-    
+
     // Cleanup low battery timer
     if (adc_ctx.low_bat_timer) {
         esp_timer_stop(adc_ctx.low_bat_timer);

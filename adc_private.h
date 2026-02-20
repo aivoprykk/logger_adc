@@ -29,7 +29,7 @@ extern "C" {
 // #define USE_REF_SNAPSHOT
 
 #ifdef ULP_MODE
-/* 
+/*
  * Safe ULP variable access macros
  * The ULP compiler generates uint32_t symbols and our assembly uses 32-bit words
  * These macros handle the type conversion safely
@@ -38,7 +38,7 @@ extern "C" {
 #define ULP_SET_U32(var, val) ((var) = (val))
 #define ULP_GET_U16(var) (*(volatile uint16_t*)&(var) & UINT16_MAX)
 #define ULP_SET_U16(var, val) (*(volatile uint16_t*)&(var) = (val))
-#define ULP_GET_U8(var) (*(volatile uint8_t*)&(var) & UINT8_MAX)  
+#define ULP_GET_U8(var) (*(volatile uint8_t*)&(var) & UINT8_MAX)
 #define ULP_SET_U8(var, val) (*(volatile uint8_t*)&(var) = (val))
 #define ULP_GET_ARR_U32(arr, i) (((volatile uint32_t*)&(arr))[i] & UINT16_MAX)
 #define ULP_SET_ARR_U32(arr, i, val) (((volatile uint32_t*)&(arr))[i] = (val))
@@ -80,6 +80,7 @@ typedef struct adc_context_s {
     bool lcd_charge_notification;
     bool events_suppressed;
     uint8_t do_calibration;
+    bool (*should_filter_charge_events)(void);
 } adc_context_t;
 
 #define ADC_CONTEXT_DEFAULT {0}
