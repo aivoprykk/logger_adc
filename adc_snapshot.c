@@ -13,7 +13,7 @@ static const char *TAG = "adc_snapshot";
 static bool snapshot_initialized = 0;
 RTC_DATA_ATTR static bool calibration_applied = false;
 
-battery_calibration_t current_calibration = {0};
+RTC_DATA_ATTR battery_calibration_t current_calibration = {0};
 static battery_snapshot_t current_snapshot = {0};
 
 void battery_snapshot_init(void) {

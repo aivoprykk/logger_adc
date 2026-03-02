@@ -11,6 +11,7 @@
 static const char *TAG = "adc_base";
 
 static bool adc_initialized = false;
+static bool adc_deinit_in_progress = false;
 
 adc_context_t adc_ctx = ADC_CONTEXT_DEFAULT;
 RTC_DATA_ATTR static uint32_t s_cached_batt_mv = 0;
@@ -352,7 +353,13 @@ static void adc_update(void*arg) {
         } else if ((now_ms - adc_ctx.low_bat_start_time_ms) > LOW_BAT_SEQUENCE_TIME_MS) {
             ELOG(TAG, "Battery critically low for %d seconds - triggering shutdown",
                  (int)FROM_K_UL(LOW_BAT_SEQUENCE_TIME_MS));
-            if (adc_ctx.low_battery_callback) {
+            /* Fire via timer task to decouple from the ADC worker task context.
+             * A direct call here would synchronously reach adc_deinit() which calls
+             * vTaskDelete(worker_task) on the currently-running task => deadlock. */
+            if (adc_ctx.low_bat_timer) {
+                esp_timer_start_once(adc_ctx.low_bat_timer, 0);
+            } else if (adc_ctx.low_battery_callback) {
+                WLOG(TAG, "low_bat_timer not available, calling callback directly (risk of deadlock)");
                 adc_ctx.low_battery_callback();
             }
             adc_ctx.low_bat_start_time_ms = 0;
@@ -369,10 +376,13 @@ static void adc_worker_task(void *arg) {
     while (true) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         if (!adc_initialized) {
+            if(adc_deinit_in_progress) break;
             continue;
         }
         adc_update(NULL);
     }
+    adc_ctx.worker_task = NULL;
+    vTaskDelete(NULL); /* self-delete; idle task will free TCB/stack */
 }
 
 static void adc_timer_callback(void *arg) {
@@ -416,20 +426,39 @@ float adc_get_cached_batt_volt(void) {
 
 /* Battery monitoring API - thread-safe access to battery data */
 bool adc_check_battery_level(void) {
-    if (!adc_initialized) return true; // Default to safe if not initialized
+    // if (!adc_initialized) return true; // Default to safe if not initialized
     FUNC_ENTRY_ARGS(TAG, " voltage_raw: %" PRIu16 ", threshold_3V2: %" PRIu16 "",
                     battery_get_snapshot()->battery_monitor.voltage_raw,
                     current_calibration.voltage_3V2);
     return (battery_get_snapshot()->battery_monitor.voltage_raw >= current_calibration.voltage_3V2);
 }
 
+/* Timer callback: fires from esp_timer service task, not the ADC worker task.
+ * This is the indirection that prevents the deadlock described above. */
+static void low_bat_timer_cb(void *arg) {
+    (void)arg;
+    if (adc_ctx.low_battery_callback) {
+        adc_ctx.low_battery_callback();
+    }
+}
+
 void adc_set_low_battery_callback(void (*callback)(void)) {
     if (bat_safe_lock(50)) {
         adc_ctx.low_battery_callback = callback;
+        if (!adc_ctx.low_bat_timer && callback) {
+            const esp_timer_create_args_t args = {
+                .callback = low_bat_timer_cb,
+                .name = "adc_low_bat",
+                .skip_unhandled_events = true,
+            };
+            if (esp_timer_create(&args, &adc_ctx.low_bat_timer) != ESP_OK) {
+                ELOG(TAG, "adc_set_low_battery_callback: failed to create dispatch timer");
+            }
+        }
         bat_safe_unlock();
     } else {
-        // Fallback assignment without mutex
         adc_ctx.low_battery_callback = callback;
+        WLOG(TAG, "adc_set_low_battery_callback: mutex timeout - dispatch timer not created");
     }
 }
 
@@ -679,29 +708,53 @@ esp_err_t adc_deinit() {
     FUNC_ENTRY(TAG);
     if(!adc_initialized) return ESP_OK; // Not initialized
     adc_initialized = false;
+    adc_deinit_in_progress = true;
     esp_err_t err = 0;
-    if(adc_lock(-1)) {
+    /* Stop the timer BEFORE flushing the lock so that no new worker
+     * notifications can be generated during the teardown window between
+     * adc_unlock() and vTaskDelete(worker_task). Without this, the timer
+     * could fire, notify the worker, and the worker would race to
+     * self-delete (setting worker_task = NULL) before we reach the
+     * vTaskDelete() below — a benign but unnecessary race. */
+    if (adc_ctx.adc_timer) {
+        FUNC_ENTRY_ARGS(TAG, "stopping adc timer before teardown");
+        esp_timer_stop(adc_ctx.adc_timer);
+    }
+    if(adc_lock(1000)) {
         adc_unlock();
     }
     if (adc_ctx.adc_timer) {
-        esp_timer_stop(adc_ctx.adc_timer);
         esp_timer_delete(adc_ctx.adc_timer);
         adc_ctx.adc_timer = NULL;
     }
     if (adc_ctx.worker_task) {
-        vTaskDelete(adc_ctx.worker_task);
-        adc_ctx.worker_task = NULL;
+        if (adc_ctx.worker_task == xTaskGetCurrentTaskHandle()) {
+            /* adc_deinit() reached from within the worker task (e.g. via the
+             * low-battery callback chain).  vTaskDelete on self would kill us
+             * mid-stack and leave mutexes/cleanup incomplete.  Clear the handle
+             * and let the worker loop's post-adc_update break+vTaskDelete(NULL)
+             * path handle the deletion once control unwinds. */
+            WLOG(TAG, "adc_deinit called from worker task - deferring self-deletion");
+            adc_ctx.worker_task = NULL;
+            /* adc_initialized is already false; the loop will break on next iteration */
+        } else {
+            FUNC_ENTRY_ARGS(TAG, "deleting ADC worker task");
+            vTaskDelete(adc_ctx.worker_task);
+            adc_ctx.worker_task = NULL;
+        }
     }
 #if defined(CONFIG_LOGGER_ADC_MODE_ONESHOT)
     adc_oneshot_deinit();
 #endif
     if(adc_ctx.xMutex != NULL){
+        FUNC_ENTRY_ARGS(TAG, "Deleting ADC mutex");
         vSemaphoreDelete(adc_ctx.xMutex);
         adc_ctx.xMutex = NULL;
     }
 
     // Cleanup low battery timer
     if (adc_ctx.low_bat_timer) {
+        FUNC_ENTRY_ARGS(TAG, "Stopping and deleting low battery timer");
         esp_timer_stop(adc_ctx.low_bat_timer);
         esp_timer_delete(adc_ctx.low_bat_timer);
         adc_ctx.low_bat_timer = NULL;
@@ -709,6 +762,7 @@ esp_err_t adc_deinit() {
 
     // Cleanup battery safety mutex
     if(adc_ctx.batMutex != NULL){
+        FUNC_ENTRY_ARGS(TAG, "Deleting battery safety mutex");
         vSemaphoreDelete(adc_ctx.batMutex);
         adc_ctx.batMutex = NULL;
     }
